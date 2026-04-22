@@ -1,0 +1,15 @@
+# traefik-dynamic.yml
+http:
+  middlewares:
+    admin-auth:
+      basicAuth:
+        usersFile: /run/secrets/admin_credentials
+tls:
+  certificates:
+    - certFile: /run/secrets/cert
+      keyFile: /run/secrets/key
+  stores:
+      default:
+        defaultCertificate:
+          certFile: /run/secrets/cert
+          keyFile: /run/secrets/key

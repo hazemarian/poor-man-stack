@@ -1,0 +1,64 @@
+version: "3.9"
+
+services:
+  openobserve:
+    image: public.ecr.aws/zinclabs/openobserve:v0.30.0
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.role == manager]
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.openobserve.rule=Host(`observ.${DOMAIN}`)"
+        - "traefik.http.services.openobserve.loadbalancer.server.port=5080"
+        - "traefik.http.routers.openobserve.entrypoints=websecure"
+        - "traefik.http.routers.openobserve.tls=true"
+        - "traefik.swarm.network=traefik-net"
+    environment:
+      - ZO_ROOT_USER_EMAIL=${ZO_ROOT_USER_EMAIL}
+      - ZO_ROOT_USER_PASSWORD=${ZO_ROOT_USER_PASSWORD}
+      - ZO_DATA_DIR=/data
+      - ZO_HTTP_PORT=5080
+      - ZO_GRPC_PORT=5081
+      - ZO_TELEMETRY=false
+      - ZO_APP_NAME=openobserve
+    volumes:
+      - openobserve_data:/data
+    networks:
+      - monitoring-net
+      - traefik-net
+      
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.142.0
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    user: "0:0"
+    deploy:
+      mode: global
+      resources:
+        reservations:
+          cpus: '0.3'
+          memory: 256M
+        limits:
+          cpus: '0.4'
+          memory: 512M
+      restart_policy:
+        condition: any
+        delay: 5s
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - monitoring-net
+
+volumes:
+  openobserve_data:
+
+networks:
+  monitoring-net:
+    external: true
+  traefik-net:
+    external: true

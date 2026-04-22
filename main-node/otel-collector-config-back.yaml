@@ -1,0 +1,138 @@
+extensions:
+  docker_observer:
+    endpoint: "unix:///var/run/docker.sock"
+    api_version: 1.44
+
+receivers:
+  otlp:
+    protocols:
+      grpc: { endpoint: "0.0.0.0:4317" }
+      http: { endpoint: "0.0.0.0:4318" }
+
+  receiver_creator:
+    watch_observers: [docker_observer]
+    receivers:
+      filelog:
+        rule: type == "container"
+        config:
+          include: ["/var/lib/docker/containers/`container_id`/*.log"]
+          include_file_name: false
+          start_at: end
+          attributes:
+            container.name: "`name`"
+            container.id: "`container_id`"
+            service.name: "`label:com.docker.swarm.service.name`"
+            service.namespace: "`label:com.docker.stack.namespace`"
+            container.image.id: "`image_id`"
+            container.image.name: "`image`"
+          
+          # ✅ IMPROVEMENT 1: Restored Operators to unwrap Docker JSON
+          operators:
+            # 1. Parse Docker Wrapper (Extracts real time and message)
+            - type: json_parser
+              timestamp:
+                parse_from: attributes.time
+                layout: '%Y-%m-%dT%H:%M:%S.%LZ'
+            
+            # 2. Move the inner message to Body
+            - type: move
+              from: attributes.log
+              to: body
+
+            # 3. ✅ IMPROVEMENT 2: Handle Multi-line Logs (Stack Traces)
+            # Stitches lines together if they don't start with a timestamp
+            # (Adjust the regex if your logs don't start with YYYY-MM-DD)
+            - type: recombine
+              combine_field: body
+              is_first_entry: body matches "^\\d{4}-\\d{2}-\\d{2}|^\\[?\\d{4}-\\d{2}-\\d{2}"
+              source_identifier: attributes["container.id"]
+
+  docker_stats:
+    endpoint: "unix:///var/run/docker.sock"
+    api_version: 1.44
+    collection_interval: 10s
+    metric_labels_to_resource_attributes:
+      com.docker.swarm.service.name: "service.name"
+      com.docker.stack.namespace: "stack.name"
+      com.docker.swarm.node.id: "swarm.node.id"
+      com.docker.swarm.task.name: "container.name"
+
+processors:
+  batch:
+    send_batch_size: 1000
+    timeout: 10s
+
+  resourcedetection:
+    detectors: [system, docker]
+    # Changed to false to prevent overwriting specific Docker stats
+    override: false
+
+  transform:
+    error_mode: ignore
+    log_statements:
+      - context: resource
+        statements:
+          # Fallbacks for missing names
+          - set(attributes["service.name"], attributes["container.name"]) where attributes["service.name"] == "" or attributes["service.name"] == nil
+          - set(attributes["service.namespace"], "standalone") where attributes["service.namespace"] == "" or attributes["service.namespace"] == nil
+
+      - context: log
+        statements:
+          # --- NOISE FILTERING ---
+          # ✅ IMPROVEMENT 3: Drop useless health checks
+          - drop() where IsMatch(body, "ELB-HealthChecker/2.0")
+          - drop() where IsMatch(body, "kube-probe")
+          - drop() where IsMatch(body, "GET /health HTTP") and attributes["stream"] == "stdout"
+
+          # --- SEVERITY LOGIC ---
+          # 1. Baseline from Docker Stream
+          - set(attributes["severity_text"], "INFO") where attributes["stream"] == "stdout"
+          - set(attributes["severity_number"], 9)    where attributes["stream"] == "stdout"
+          - set(attributes["severity_text"], "ERROR") where attributes["stream"] == "stderr"
+          - set(attributes["severity_number"], 17)    where attributes["stream"] == "stderr"
+
+          # 2. OTLP Defaults
+          - set(attributes["severity_number"], 9) where severity_number == 0
+          - set(attributes["severity_text"], "INFO") where severity_number == 0
+
+          # 3. Text Keywords (Warn/Error in plain text)
+          - set(attributes["severity_text"], "WARN") where severity_number <= 9 and IsMatch(body, "(?i)(\\bwarn\\b|\\bwarning\\b|\\[warn\\])")
+          - set(attributes["severity_number"], 13)   where severity_number <= 9 and IsMatch(body, "(?i)(\\bwarn\\b|\\bwarning\\b|\\[warn\\])")
+          - set(attributes["severity_text"], "ERROR") where severity_number <= 13 and IsMatch(body, "(?i)(\\berror\\b|\\berr\\b|\\bcritical\\b|\\[error\\])")
+          - set(attributes["severity_number"], 17)    where severity_number <= 13 and IsMatch(body, "(?i)(\\berror\\b|\\berr\\b|\\bcritical\\b|\\[error\\])")
+
+          # --- JSON PARSING ---
+          - merge_maps(attributes, ParseJSON(body), "upsert") where IsMatch(body, "^\\{")
+          - set(attributes["severity_text"], attributes["level"]) where attributes["level"] != nil
+
+          # ✅ IMPROVEMENT 4: Clean up the main view
+          # If the JSON had a "msg" or "message" field, make that the main body text
+          # This removes the ugly JSON brackets from the main list view
+          - set(body, attributes["msg"]) where attributes["msg"] != nil
+          - set(body, attributes["message"]) where attributes["message"] != nil
+
+exporters:
+  otlp/openobserve:
+    endpoint: "openobserve:5081"
+    tls:
+      insecure: true
+    headers:
+      # ⚠️ DON'T FORGET TO PASTE YOUR REAL AUTH TOKEN HERE
+      Authorization: "__BASIC_AUTH_PLACEHOLDER__"
+      organization: "default"
+
+service:
+  extensions: [docker_observer]
+  pipelines:
+    logs:
+      receivers: [receiver_creator, otlp]
+      processors: [transform, batch]
+      exporters: [otlp/openobserve]
+    metrics:
+      receivers: [docker_stats, otlp]
+      processors: [resourcedetection, batch]
+      exporters: [otlp/openobserve]
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/openobserve]

@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  # The Global Backup Agent
+  # Runs on EVERY node automatically
+  volume-backup:
+    image: offen/docker-volume-backup:v2
+    deploy:
+      mode: global  # <--- The Magic: Ensures 1 copy per node
+      restart_policy:
+        condition: on-failure
+    environment:
+      # 1. Schedule: Run every night at 3:00 AM
+      - BACKUP_CRON_EXPRESSION=0 3 * * *
+      
+      # 2. Naming: distinct names per node so they don't overwrite each other
+      # Result: backup-nodeID-2023-10-25.tar.gz
+      - BACKUP_FILENAME=backup-{{ .Node.ID }}-%Y-%m-%dT%H-%M-%S.tar.gz
+      
+      # 3. Retention: Delete backups older than 7 days
+      - BACKUP_PRUNING_PREFIX=backup-
+      - BACKUP_RETENTION_DAYS=7
+
+      # 4. (Optional) S3 / Cloud Storage Config
+      # Uncomment and fill these to send backups to the cloud
+      # - AWS_S3_BUCKET_NAME=my-swarm-backups
+      # - AWS_ACCESS_KEY_ID=minioadmin
+      # - AWS_SECRET_ACCESS_KEY=minioadmin
+      # - AWS_ENDPOINT=http://minio:9000
+      
+    volumes:
+      # SOURCE: Mount the host's volume directory so the container can read it
+      - /var/lib/docker/volumes:/backup/my-volumes:ro
+      
+      # DESTINATION: Where to save the .tar.gz files locally?
+      # (This folder will be created on the Host machine)
+      - /var/backups/docker-volumes:/archive
+      
+      # CONFIG: Sync timezone so 3 AM is actually 3 AM
+      - /etc/localtime:/etc/localtime:ro

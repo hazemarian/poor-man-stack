@@ -1,0 +1,127 @@
+version: "3.9"
+services:
+  # Traefik Gateway
+  traefik:
+    image: traefik:v3.6.5
+    command:
+      - "--api.dashboard=true"
+      - "--providers.swarm=true"
+      - "--providers.swarm.exposedByDefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.websecure.http.tls=true"
+      - "--providers.file.filename=/etc/traefik/dynamic/conf.yml"
+      - "--providers.file.watch=true"
+      - "--providers.docker.network=traefik-net"
+      - "--accesslog=false"
+      - "--accesslog.format=json"
+      - "--log.level=INFO"
+      - "--tracing.otlp=true"
+      - "--tracing.otlp.grpc.endpoint=observability_otel-collector:4317"
+      - "--tracing.otlp.grpc.insecure=true"
+      - "--metrics.otlp=true"
+      - "--metrics.otlp.grpc.endpoint=observability_otel-collector:4317"
+      - "--metrics.otlp.grpc.insecure=true"
+      - "--metrics.otlp.pushInterval=10s"
+      - "--metrics.otlp.addEntryPointsLabels=true"
+      - "--metrics.otlp.addRoutersLabels=true"
+      - "--metrics.otlp.addServicesLabels=true"
+      - "--tracing.serviceName=traefik-proxy"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik-dynamic.yml:/etc/traefik/dynamic/conf.yml:ro
+    networks:
+      - traefik-net
+      - monitoring-net
+    deploy:
+      mode: global
+      placement:
+        constraints: [node.role == manager]
+      resources:
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+        limits:
+          cpus: '0.25'
+          memory: 256M
+      labels:
+        - "traefik.http.services.infra-traefik.loadbalancer.server.port=8080"
+
+        # Middleware for redirecting HTTP to HTTPS
+        - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
+        - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"
+
+        # Router for redirecting HTTP to HTTPS on all hosts
+        - "traefik.http.routers.http-catchall.rule=hostregexp(`{host:.+}`)"
+        - "traefik.http.routers.http-catchall.entrypoints=web"
+        - "traefik.http.routers.http-catchall.middlewares=https-redirect"
+
+        # Traefik dashboard router
+        - "traefik.enable=true"
+        - "traefik.http.routers.traefik.service=api@internal"
+        - "traefik.http.routers.traefik.rule=Host(`traefik.${DOMAIN}`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))"
+        - "traefik.http.routers.traefik.entrypoints=websecure"
+        - "traefik.http.routers.traefik.tls=true"
+        - "traefik.http.routers.traefik.middlewares=admin-auth@file"
+    secrets:
+      - admin_credentials
+      - cert
+      - key
+
+  # Portainer Management
+  portainer:
+    image: portainer/portainer-ce:2.33.6
+    command:
+      - "--admin-password-file=/run/secrets/portainer_admin_password"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    networks:
+      - traefik-net
+    deploy:
+      placement:
+        constraints: [node.role == manager]
+      resources:
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+        limits:
+          cpus: '0.25'
+          memory: 256M
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.portainer.rule=Host(`portainer.${DOMAIN}`)"
+        - "traefik.http.routers.portainer.entrypoints=websecure"
+        - "traefik.http.routers.portainer.tls=true"
+        - "traefik.http.services.portainer.loadbalancer.server.port=9000"
+        # Apply the SAME middleware defined in the Traefik service
+        # - "traefik.http.routers.portainer.middlewares=admin-auth@file"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    secrets:
+      - portainer_admin_password
+
+volumes:
+  portainer_data:
+
+networks:
+  traefik-net:
+    external: true
+  monitoring-net:
+    external: true
+
+secrets:
+  admin_credentials:
+    external: true
+  portainer_admin_password:
+    external: true
+  cert:
+    external: true
+  key:
+    external: true
