@@ -181,6 +181,16 @@ SOFTWARE.
 
 ---
 
+## RFC & Discussion
+
+The full design proposal for this stack — including architecture decisions, component rationale, and alternatives considered — is tracked as an open RFC:
+
+**[RFC: A Simple, Cost-Effective, and Industry-Standard Deployment Stack #1](https://github.com/hazemarian/poor-man-stack/issues/1)**
+
+Feedback, questions, and suggestions are welcome directly on that issue.
+
+---
+
 ## Contact
 
 Built and maintained by **Hazem Arian**.
