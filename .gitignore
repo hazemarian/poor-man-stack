@@ -24,6 +24,10 @@ npm-debug.log
 # Project-specific
 issue.md
 
+# Generated at deploy time — contains credentials, never commit
+main-node/otel-collector-config.yaml
+*.bak
+
 # OS generated files
 .DS_Store
 .DS_Store?

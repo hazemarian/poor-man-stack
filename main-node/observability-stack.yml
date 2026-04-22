@@ -3,6 +3,12 @@ version: "3.9"
 services:
   openobserve:
     image: public.ecr.aws/zinclabs/openobserve:v0.30.0
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        export ZO_ROOT_USER_EMAIL=$$(cat /run/secrets/zo_root_user_email)
+        export ZO_ROOT_USER_PASSWORD=$$(cat /run/secrets/zo_root_user_password)
+        exec /go/bin/openobserve
     deploy:
       mode: replicated
       replicas: 1
@@ -16,13 +22,14 @@ services:
         - "traefik.http.routers.openobserve.tls=true"
         - "traefik.swarm.network=traefik-net"
     environment:
-      - ZO_ROOT_USER_EMAIL=${ZO_ROOT_USER_EMAIL}
-      - ZO_ROOT_USER_PASSWORD=${ZO_ROOT_USER_PASSWORD}
       - ZO_DATA_DIR=/data
       - ZO_HTTP_PORT=5080
       - ZO_GRPC_PORT=5081
       - ZO_TELEMETRY=false
       - ZO_APP_NAME=openobserve
+    secrets:
+      - zo_root_user_email
+      - zo_root_user_password
     volumes:
       - openobserve_data:/data
     networks:
@@ -61,4 +68,10 @@ networks:
   monitoring-net:
     external: true
   traefik-net:
+    external: true
+
+secrets:
+  zo_root_user_email:
+    external: true
+  zo_root_user_password:
     external: true

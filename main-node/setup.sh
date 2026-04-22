@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 # 1. Install Docker (if not present)
 if ! command -v docker &> /dev/null; then
@@ -13,46 +14,45 @@ fi
 # 2. Initialize Swarm (if not active)
 if [ "$(docker info --format '{{.Swarm.LocalNodeState}}')" != "active" ]; then
     echo "🌟 Initializing Docker Swarm..."
-    # Auto-detect the primary IP address of the server
     IP_ADDR=$(hostname -I | awk '{print $1}')
-    docker swarm init --advertise-addr $IP_ADDR
+    docker swarm init --advertise-addr "$IP_ADDR"
 else
     echo "✅ Swarm is already active."
 fi
 
-# 3. Remove Existing Stacks, Secrets & Networks
-
-echo "🔥 Removing existing stacks to release networks..."
-docker stack rm infra || true
+# 3. Remove existing stacks, secrets & networks
+echo "🔥 Removing existing stacks..."
+docker stack rm infra         || true
 docker stack rm observability || true
-docker stack rm backup || true
-echo "⏳ Waiting for stacks to be removed... (15s)"
+docker stack rm backup        || true
+echo "⏳ Waiting for stacks to be removed... (10s)"
 sleep 10
 
 echo "🧹 Cleaning up old containers and volumes..."
 docker container prune -f || true
-docker volume prune -f || true
+docker volume prune -f    || true
 
-echo "🔒 Removing secrets..."
-docker secret rm admin_credentials || true
-docker secret rm cert || true
-docker secret rm key || true
+echo "🔒 Removing old secrets..."
+docker secret rm admin_credentials        || true
+docker secret rm cert                     || true
+docker secret rm key                      || true
 docker secret rm portainer_admin_password || true
+docker secret rm zo_root_user_email       || true
+docker secret rm zo_root_user_password    || true
 
 echo "🌐 Removing existing networks..."
-docker network rm traefik-net || true
+docker network rm traefik-net    || true
 docker network rm monitoring-net || true
 
-# 4. Create Networks
-
-echo "🌐 Creating fresh overlay networks..."
+# 4. Create networks
+echo "🌐 Creating overlay networks..."
 docker network create --driver=overlay --attachable traefik-net
 docker network create --driver=overlay --attachable monitoring-net
 
-# 5. Load Configuration
+# 5. Load configuration
 if [ ! -f .env ]; then
-    echo "📄 .env file not found. Copying .env.example to .env."
-    echo "Please edit the .env file with your configuration and run the script again."
+    echo "📄 .env not found. Copying .env.example to .env."
+    echo "Please edit .env with your configuration and run the script again."
     cp .env.example .env
     exit 1
 fi
@@ -60,189 +60,97 @@ set -a
 source .env
 set +a
 
-echo "ℹ️  Using the following configuration from .env file:"
-echo "    - DOMAIN"
-echo "    - TRAEFIK_ADMIN_USER"
-echo "    - TRAEFIK_ADMIN_PASSWORD"
-echo "    - ZO_ROOT_USER_EMAIL"
-echo "    - ZO_ROOT_USER_PASSWORD"
-echo "    - PORTAINER_ADMIN_PASSWORD"
-echo "    - CERT_PATH"
-echo "    - KEY_PATH"
+echo "ℹ️  Configuration loaded from .env:"
+echo "    DOMAIN, TRAEFIK_ADMIN_USER, TRAEFIK_ADMIN_PASSWORD"
+echo "    ZO_ROOT_USER_EMAIL, ZO_ROOT_USER_PASSWORD"
+echo "    PORTAINER_ADMIN_PASSWORD, CERT_PATH, KEY_PATH"
 echo ""
 
-# Validate required variables
-
+# 6. Validate required variables
 if ! command -v openssl &> /dev/null; then
-
-    echo "Error: openssl is not installed. Please install it to continue."
-
+    echo "❌ openssl is not installed. Please install it to continue."
     exit 1
-
 fi
 
-
-
-if [ -z "$DOMAIN" ]; then
-
-  echo "❌ Error: DOMAIN is not set in the .env file."
-
-  exit 1
-
-fi
-
-if [ -z "$TRAEFIK_ADMIN_USER" ]; then
-
-  echo "❌ Error: TRAEFIK_ADMIN_USER is not set in the .env file."
-
-  exit 1
-
-fi
-
-if [ -z "$TRAEFIK_ADMIN_PASSWORD" ]; then
-
-  echo "❌ Error: TRAEFIK_ADMIN_PASSWORD is not set in the .env file."
-
-  exit 1
-
-fi
-
-if [ -z "$ZO_ROOT_USER_EMAIL" ]; then
-    
-    echo "❌ Error: ZO_ROOT_USER_EMAIL is not set in the .env file."
-    
-    exit 1
-    
-fi
-
-if [ -z "$ZO_ROOT_USER_PASSWORD" ]; then
-    
-    echo "❌ Error: ZO_ROOT_USER_PASSWORD is not set in the .env file."
-    
-    exit 1
-    
-fi
-
-if [ -z "$PORTAINER_ADMIN_PASSWORD" ]; then
-
-  echo "❌ Error: PORTAINER_ADMIN_PASSWORD is not set in the .env file."
-
-  exit 1
-
-fi
-
-if [ -z "$CERT_PATH" ]; then
-
-  echo "❌ Error: CERT_PATH is not set in the .env file."
-
-  exit 1
-
-fi
+for var in DOMAIN TRAEFIK_ADMIN_USER TRAEFIK_ADMIN_PASSWORD \
+           ZO_ROOT_USER_EMAIL ZO_ROOT_USER_PASSWORD \
+           PORTAINER_ADMIN_PASSWORD CERT_PATH KEY_PATH; do
+    if [ -z "${!var}" ]; then
+        echo "❌ Error: $var is not set in the .env file."
+        exit 1
+    fi
+done
 
 if [ ! -f "$CERT_PATH" ]; then
-
-  echo "❌ Error: Certificate file not found at path specified by CERT_PATH: $CERT_PATH"
-
-  exit 1
-
-fi
-
-if [ -z "$KEY_PATH" ]; then
-
-  echo "❌ Error: KEY_PATH is not set in the .env file."
-
-  exit 1
-
+    echo "❌ Certificate file not found: $CERT_PATH"
+    exit 1
 fi
 
 if [ ! -f "$KEY_PATH" ]; then
-
-  echo "❌ Error: Key file not found at path specified by KEY_PATH: $KEY_PATH"
-
-  exit 1
-
+    echo "❌ Key file not found: $KEY_PATH"
+    exit 1
 fi
 
-
-
-KEY_MODULUS=$(openssl rsa -noout -modulus -in "$KEY_PATH" 2>/dev/null | openssl md5)
-
+KEY_MODULUS=$(openssl rsa  -noout -modulus -in "$KEY_PATH"  2>/dev/null | openssl md5)
 CERT_MODULUS=$(openssl x509 -noout -modulus -in "$CERT_PATH" 2>/dev/null | openssl md5)
 
-
-
 if [ "$KEY_MODULUS" != "$CERT_MODULUS" ]; then
-
-  echo "❌ Error: Certificate and private key do not match."
-
-  echo "Please ensure CERT_PATH and KEY_PATH point to a valid certificate and its corresponding private key."
-
-  exit 1
-
+    echo "❌ Certificate and private key do not match."
+    echo "   Ensure CERT_PATH and KEY_PATH point to a matching certificate and key."
+    exit 1
 fi
-
 echo "✅ Certificate and key match."
 
-
-
-
-
-# 6. Create Secrets
-
-
-
+# 7. Create secrets
 echo "🔒 Creating secrets..."
 
-
-
 HTPASSWD=$(echo -n "$TRAEFIK_ADMIN_PASSWORD" | openssl passwd -apr1 -stdin)
-
-HTPASSWD_SECRET_CONTENT="$TRAEFIK_ADMIN_USER:$HTPASSWD"
-
-echo -n "$HTPASSWD_SECRET_CONTENT" | docker secret create admin_credentials -
-
-# The command below reads the content of the file specified by the $CERT_PATH
-# environment variable and uses it to create the 'cert' secret.
+echo -n "$TRAEFIK_ADMIN_USER:$HTPASSWD" | docker secret create admin_credentials -
+echo "✅ Secret 'admin_credentials' created."
 
 cat "$CERT_PATH" | docker secret create cert -
-echo "✅ Secret 'cert' created.  $CERT_PATH"
+echo "✅ Secret 'cert' created."
 
-# Similarly, this command reads the content from the file at $KEY_PATH
-# to create the 'key' secret.
 cat "$KEY_PATH" | docker secret create key -
-echo "✅ Secret 'key' created. $KEY_PATH"
-
+echo "✅ Secret 'key' created."
 
 echo -n "$PORTAINER_ADMIN_PASSWORD" | docker secret create portainer_admin_password -
 echo "✅ Secret 'portainer_admin_password' created."
 
+echo -n "$ZO_ROOT_USER_EMAIL" | docker secret create zo_root_user_email -
+echo "✅ Secret 'zo_root_user_email' created."
 
-# 7. Configure OTel Collector
-echo "🛠️ Configuring OTel Collector..."
+echo -n "$ZO_ROOT_USER_PASSWORD" | docker secret create zo_root_user_password -
+echo "✅ Secret 'zo_root_user_password' created."
 
-# Create a backup of the original file
-cp otel-collector-config.yaml otel-collector-config.yaml.bak
+# 8. Generate OTel Collector config from template
+# The template contains a placeholder for the auth token.
+# We generate the real config here so credentials never touch git.
+echo "🛠️  Generating OTel Collector config..."
 
-# Generate the Basic Auth string
+if [ ! -f otel-collector-config.yaml.template ]; then
+    echo "❌ otel-collector-config.yaml.template not found."
+    exit 1
+fi
+
 BASIC_AUTH=$(echo -n "$ZO_ROOT_USER_EMAIL:$ZO_ROOT_USER_PASSWORD" | base64)
+sed "s|__BASIC_AUTH_PLACEHOLDER__|Basic $BASIC_AUTH|g" \
+    otel-collector-config.yaml.template > otel-collector-config.yaml
 
-# Replace the placeholder with the actual Basic Auth string
-sed -i.bak "s|__BASIC_AUTH_PLACEHOLDER__|Basic $BASIC_AUTH|g" otel-collector-config.yaml
+echo "✅ otel-collector-config.yaml generated."
 
-echo "✅ OTel Collector configured."
-
-
-# 8. Deploy the Stacks
+# 9. Deploy stacks
 echo "🚀 Deploying Infrastructure (Traefik & Portainer)..."
 docker stack deploy --prune --resolve-image always -c infra-stack.yml infra
 
-echo "🚀 Deploying Observability ..."
+echo "🚀 Deploying Observability..."
 docker stack deploy --prune --resolve-image always -c observability-stack.yml observability
 
 echo "🚀 Deploying Backups..."
 docker stack deploy --prune --resolve-image always -c backup-stack.yml backup
 
-echo "🎉 DONE! Dashboard URLs:"
-echo "   - Traefik:   https://traefik.$DOMAIN"
-echo "   - Portainer: https://portainer.$DOMAIN"
-echo "   - Observ:    https://observ.$DOMAIN"
+echo ""
+echo "🎉 Done! Dashboard URLs:"
+echo "   Traefik:   https://traefik.$DOMAIN"
+echo "   Portainer: https://portainer.$DOMAIN"
+echo "   Observ:    https://observ.$DOMAIN"
