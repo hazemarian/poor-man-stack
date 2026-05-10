@@ -1,0 +1,8 @@
+app: batch-job
+env: production
+domain: example.com
+services:
+  migrate:
+    image: alpine:3.19
+    command: [sh, -c, echo done]
+    run_once: true

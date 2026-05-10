@@ -1,0 +1,229 @@
+package cli
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"strconv"
+	"text/tabwriter"
+	"time"
+
+	"github.com/spf13/cobra"
+
+	"github.com/hazemarian/poor-man-stack/pmcluster/internal/backup"
+	"github.com/hazemarian/poor-man-stack/pmcluster/internal/cluster"
+	"github.com/hazemarian/poor-man-stack/pmcluster/internal/deploy"
+	"github.com/hazemarian/poor-man-stack/pmcluster/internal/store"
+)
+
+// deployCmd is the local-CLI deploy path. It opens the SQLite DB and
+// shells out to docker stack deploy directly — same code path the daemon
+// uses, just without the HTTP hop. Equivalent to:
+//
+//	curl -X POST https://pmcluster.<domain>/api/stacks \
+//	     -H "Authorization: Bearer <token>" \
+//	     --data-binary @manifest.yaml
+//
+// but doesn't need the daemon running. Must run on the manager node (needs
+// docker.sock + the pmcluster data dir).
+var deployCmd = &cobra.Command{
+	Use:   "deploy <manifest.yaml>",
+	Short: "Deploy or update a stack from a DSL manifest file",
+	Long: `Reads a pmcluster DSL manifest from disk, parses → interpolates →
+validates → translates to Docker Swarm Compose, records a new revision in
+SQLite, and applies it via 'docker stack deploy'.
+
+Idempotent: re-running with the same manifest produces a new revision and
+re-applies (Docker reconciles services in place). Each deploy gets a unix-
+timestamp revision id; rollback re-applies a stored one.
+
+Run on the manager node — needs access to the pmcluster data dir AND the
+Docker socket. For remote deploys, hit the HTTP API directly.`,
+	Args: cobra.ExactArgs(1),
+	RunE: runDeploy,
+}
+
+var stackCmd = &cobra.Command{
+	Use:   "stack",
+	Short: "Inspect deployed stacks and their revisions",
+}
+
+var stackListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List all stacks (name, current revision, last update)",
+	RunE:  runStackList,
+}
+
+var stackShowCmd = &cobra.Command{
+	Use:   "show <stack-name>",
+	Short: "Show a stack's metadata and recent revisions",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runStackShow,
+}
+
+var rollbackCmd = &cobra.Command{
+	Use:   "rollback <stack-name> <revision>",
+	Short: "Re-apply a stored revision as a new revision",
+	Long: `Loads the stored rendered YAML for the named revision and applies it as
+a NEW revision (preserves audit trail — both deploys are recorded).`,
+	Args: cobra.ExactArgs(2),
+	RunE: runRollback,
+}
+
+func init() {
+	deployCmd.Flags().String("app", "", "override the manifest's app name (multi-tenant deploys)")
+	deployCmd.Flags().String("repo", "", "repository URL (audit metadata only — not fetched)")
+	deployCmd.Flags().String("version", "", "override the manifest's version (image tag)")
+
+	stackCmd.AddCommand(stackListCmd, stackShowCmd)
+
+	rootCmd.AddCommand(deployCmd, stackCmd, rollbackCmd)
+}
+
+// openDeploySvc shares the boilerplate (load config → open store → build
+// service) across all four deploy/stack commands. Returns a closer that
+// the caller MUST defer.
+func openDeploySvc(cmd *cobra.Command) (*deploy.Service, *store.Store, func(), error) {
+	st, _, err := openStore()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	deployer := cluster.NewDockerCLIDeployer(cmd.OutOrStdout())
+	svc := &deploy.Service{Store: st, Deployer: deployer, Backup: backup.LocalTrigger{}}
+	return svc, st, func() { _ = st.Close() }, nil
+}
+
+func runDeploy(cmd *cobra.Command, args []string) error {
+	manifestPath := args[0]
+	manifestBytes, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return fmt.Errorf("read manifest %s: %w", manifestPath, err)
+	}
+
+	svc, _, closeFn, err := openDeploySvc(cmd)
+	if err != nil {
+		return err
+	}
+	defer closeFn()
+
+	appOverride, _ := cmd.Flags().GetString("app")
+	repo, _ := cmd.Flags().GetString("repo")
+	version, _ := cmd.Flags().GetString("version")
+
+	res, err := svc.Deploy(cmd.Context(), deploy.Payload{
+		AppName:  appOverride,
+		RepoURL:  repo,
+		Version:  version,
+		Manifest: string(manifestBytes),
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(cmd.OutOrStdout(),
+		"\n✅ Deployed %s @ revision %d (%s)\n",
+		res.StackName, res.Revision, time.Unix(res.Revision, 0).Format(time.RFC3339),
+	)
+	return nil
+}
+
+func runStackList(cmd *cobra.Command, _ []string) error {
+	_, st, closeFn, err := openDeploySvc(cmd)
+	if err != nil {
+		return err
+	}
+	defer closeFn()
+
+	stacks, err := st.ListStacks(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("list stacks: %w", err)
+	}
+	if len(stacks) == 0 {
+		fmt.Fprintln(cmd.OutOrStdout(), "(no stacks yet — use `pmcluster deploy <manifest.yaml>`)")
+		return nil
+	}
+
+	w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tREVISION\tUPDATED\tREPO")
+	for _, s := range stacks {
+		repo := "—"
+		if s.RepoURL.Valid && s.RepoURL.String != "" {
+			repo = s.RepoURL.String
+		}
+		fmt.Fprintf(w, "%s\t%d\t%s\t%s\n",
+			s.Name, s.CurrentRevision,
+			time.Unix(s.UpdatedAt, 0).Format(time.RFC3339), repo,
+		)
+	}
+	return w.Flush()
+}
+
+func runStackShow(cmd *cobra.Command, args []string) error {
+	name := args[0]
+	_, st, closeFn, err := openDeploySvc(cmd)
+	if err != nil {
+		return err
+	}
+	defer closeFn()
+
+	s, err := st.GetStack(cmd.Context(), name)
+	if err != nil {
+		if errors.Is(err, store.ErrStackNotFound) {
+			return fmt.Errorf("stack %q not found", name)
+		}
+		return err
+	}
+	revs, err := st.ListRevisions(cmd.Context(), name, 20)
+	if err != nil {
+		return fmt.Errorf("list revisions: %w", err)
+	}
+
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "Stack:            %s\n", s.Name)
+	fmt.Fprintf(out, "Current revision: %d (%s)\n", s.CurrentRevision, time.Unix(s.CurrentRevision, 0).Format(time.RFC3339))
+	if s.RepoURL.Valid && s.RepoURL.String != "" {
+		fmt.Fprintf(out, "Repo:             %s\n", s.RepoURL.String)
+	}
+	fmt.Fprintf(out, "Created:          %s\n", time.Unix(s.CreatedAt, 0).Format(time.RFC3339))
+	fmt.Fprintf(out, "Updated:          %s\n", time.Unix(s.UpdatedAt, 0).Format(time.RFC3339))
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "Recent revisions (%d):\n", len(revs))
+
+	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "  REVISION\tCREATED")
+	for _, r := range revs {
+		marker := "  "
+		if r.Revision == s.CurrentRevision {
+			marker = "→ "
+		}
+		fmt.Fprintf(w, "%s%d\t%s\n", marker, r.Revision, time.Unix(r.CreatedAt, 0).Format(time.RFC3339))
+	}
+	return w.Flush()
+}
+
+func runRollback(cmd *cobra.Command, args []string) error {
+	name := args[0]
+	rev, err := strconv.ParseInt(args[1], 10, 64)
+	if err != nil {
+		return fmt.Errorf("revision must be an integer: %w", err)
+	}
+
+	svc, _, closeFn, err := openDeploySvc(cmd)
+	if err != nil {
+		return err
+	}
+	defer closeFn()
+
+	res, err := svc.Rollback(cmd.Context(), name, rev)
+	if err != nil {
+		if errors.Is(err, store.ErrRevisionNotFound) {
+			return fmt.Errorf("revision %d not found for stack %q", rev, name)
+		}
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(),
+		"\n✅ Rolled back %s to revision %d (new revision %d, %s)\n",
+		res.StackName, rev, res.Revision, time.Unix(res.Revision, 0).Format(time.RFC3339),
+	)
+	return nil
+}

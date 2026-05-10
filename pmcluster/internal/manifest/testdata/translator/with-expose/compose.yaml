@@ -1,0 +1,34 @@
+networks:
+  monitoring-net:
+    external: true
+  traefik-net:
+    external: true
+  web-app-net:
+    driver: overlay
+services:
+  api:
+    deploy:
+      labels:
+        application: web-app
+        environment: production
+        service: api
+        traefik.docker.network: traefik-net
+        traefik.enable: "true"
+        traefik.http.routers.web-app-api.entrypoints: websecure
+        traefik.http.routers.web-app-api.rule: Host(`api.web-app.example.com`)
+        traefik.http.routers.web-app-api.tls: "true"
+        traefik.http.services.web-app-api.loadbalancer.server.port: "8080"
+        version: latest
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      update_config:
+        delay: 10s
+        order: start-first
+        parallelism: 1
+    image: nginx:latest
+    networks:
+    - web-app-net
+    - traefik-net
+    - monitoring-net
+version: "3.9"

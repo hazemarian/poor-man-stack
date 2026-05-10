@@ -1,0 +1,21 @@
+networks:
+  batch-job-net:
+    driver: overlay
+services:
+  migrate:
+    command:
+    - sh
+    - -c
+    - echo done
+    deploy:
+      labels:
+        application: batch-job
+        environment: production
+        service: migrate
+        version: latest
+      restart_policy:
+        condition: none
+    image: alpine:3.19
+    networks:
+    - batch-job-net
+version: "3.9"

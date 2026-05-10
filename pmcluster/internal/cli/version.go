@@ -1,0 +1,23 @@
+package cli
+
+import (
+	"fmt"
+	"runtime"
+
+	"github.com/spf13/cobra"
+
+	"github.com/hazemarian/poor-man-stack/pmcluster/internal/buildinfo"
+)
+
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Print pmcluster version information",
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		v, c, d := buildinfo.Resolve()
+		fmt.Fprintf(cmd.OutOrStdout(),
+			"pmcluster %s\n  commit: %s\n  built:  %s\n  go:     %s %s/%s\n",
+			v, c, d, runtime.Version(), runtime.GOOS, runtime.GOARCH,
+		)
+		return nil
+	},
+}

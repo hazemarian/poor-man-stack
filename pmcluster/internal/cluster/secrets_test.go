@@ -1,0 +1,204 @@
+package cluster
+
+import (
+	"context"
+	"encoding/base64"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"golang.org/x/crypto/bcrypt"
+)
+
+func TestEnsureSecret_CreatesWhenMissing(t *testing.T) {
+	f := newFakeDocker()
+	data := []byte("super-secret")
+
+	created, err := EnsureSecret(context.Background(), f, "my-secret", data)
+	if err != nil {
+		t.Fatalf("EnsureSecret: %v", err)
+	}
+	if !created {
+		t.Error("created = false, want true for a new secret")
+	}
+	spec, ok := f.secrets["my-secret"]
+	if !ok {
+		t.Fatal("secret not found in fake after creation")
+	}
+	if string(spec.Data) != "super-secret" {
+		t.Errorf("secret data = %q, want 'super-secret'", spec.Data)
+	}
+}
+
+func TestEnsureSecret_NoOpWhenPreExisting(t *testing.T) {
+	f := newFakeDocker()
+	f.secrets["my-secret"] = struct {
+		Name   string
+		Data   []byte
+		Labels map[string]string
+	}{Name: "my-secret", Data: []byte("original")}
+
+	created, err := EnsureSecret(context.Background(), f, "my-secret", []byte("replacement"))
+	if err != nil {
+		t.Fatalf("EnsureSecret: %v", err)
+	}
+	if created {
+		t.Error("created = true, want false for pre-existing secret")
+	}
+	// Data must not be modified.
+	if string(f.secrets["my-secret"].Data) != "original" {
+		t.Error("EnsureSecret modified the existing secret data")
+	}
+}
+
+func TestEnsureSecret_AttachesManagedLabel(t *testing.T) {
+	f := newFakeDocker()
+
+	_, err := EnsureSecret(context.Background(), f, "labeled-secret", []byte("data"))
+	if err != nil {
+		t.Fatalf("EnsureSecret: %v", err)
+	}
+	spec := f.secrets["labeled-secret"]
+	if spec.Labels[pmclusterLabel] != "true" {
+		t.Errorf("label %q = %q, want 'true'", pmclusterLabel, spec.Labels[pmclusterLabel])
+	}
+}
+
+func TestEnsureSecretFromFile_ReadsFileContent(t *testing.T) {
+	dir := t.TempDir()
+	content := []byte("file-content-for-secret")
+	path := filepath.Join(dir, "testfile")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	f := newFakeDocker()
+	created, err := EnsureSecretFromFile(context.Background(), f, "file-secret", path)
+	if err != nil {
+		t.Fatalf("EnsureSecretFromFile: %v", err)
+	}
+	if !created {
+		t.Error("created = false, want true")
+	}
+	spec, ok := f.secrets["file-secret"]
+	if !ok {
+		t.Fatal("secret not found in fake")
+	}
+	if string(spec.Data) != string(content) {
+		t.Errorf("secret data = %q, want %q", spec.Data, content)
+	}
+}
+
+func TestRandomPassword_LengthAndEntropy(t *testing.T) {
+	seen := make(map[string]bool)
+	for i := 0; i < 5; i++ {
+		p, err := RandomPassword()
+		if err != nil {
+			t.Fatalf("RandomPassword #%d: %v", i, err)
+		}
+		if len(p) < 30 {
+			t.Errorf("password #%d length = %d, want >= 30", i, len(p))
+		}
+		if seen[p] {
+			t.Fatal("duplicate password returned — entropy check failed")
+		}
+		seen[p] = true
+	}
+}
+
+func TestRandomPassword_IsBase64URLEncoded(t *testing.T) {
+	for i := 0; i < 5; i++ {
+		p, err := RandomPassword()
+		if err != nil {
+			t.Fatalf("RandomPassword: %v", err)
+		}
+		// Must decode as base64 raw URL (no padding, URL-safe alphabet).
+		if _, err := base64.RawURLEncoding.DecodeString(p); err != nil {
+			t.Errorf("password %q is not valid base64url: %v", p, err)
+		}
+	}
+}
+
+func TestHtpasswdLine_Format(t *testing.T) {
+	line, err := HtpasswdLine("admin", "s3cr3t")
+	if err != nil {
+		t.Fatalf("HtpasswdLine: %v", err)
+	}
+
+	// Must end with a newline.
+	if !strings.HasSuffix(line, "\n") {
+		t.Errorf("HtpasswdLine does not end with newline: %q", line)
+	}
+
+	// Must start with "admin:".
+	if !strings.HasPrefix(line, "admin:") {
+		t.Errorf("HtpasswdLine does not start with 'admin:': %q", line)
+	}
+
+	// Extract the hash portion (strip "admin:" prefix and trailing newline).
+	trimmed := strings.TrimSuffix(line, "\n")
+	parts := strings.SplitN(trimmed, ":", 2)
+	if len(parts) != 2 {
+		t.Fatalf("expected 'user:hash', got %q", trimmed)
+	}
+	hash := parts[1]
+
+	// bcrypt.CompareHashAndPassword must succeed.
+	if err := bcrypt.CompareHashAndPassword([]byte(hash), []byte("s3cr3t")); err != nil {
+		t.Errorf("bcrypt comparison failed: %v", err)
+	}
+}
+
+func TestEnsureConfig_CreatesWhenMissing(t *testing.T) {
+	f := newFakeDocker()
+	data := []byte("otel: config")
+
+	created, err := EnsureConfig(context.Background(), f, "otel_config", data)
+	if err != nil {
+		t.Fatalf("EnsureConfig: %v", err)
+	}
+	if !created {
+		t.Error("created = false, want true for a new config")
+	}
+	spec, ok := f.configs["otel_config"]
+	if !ok {
+		t.Fatal("config not found in fake after creation")
+	}
+	if string(spec.Data) != "otel: config" {
+		t.Errorf("config data = %q, want 'otel: config'", spec.Data)
+	}
+}
+
+func TestEnsureConfig_NoOpWhenPreExisting(t *testing.T) {
+	f := newFakeDocker()
+	f.configs["otel_config"] = struct {
+		Name   string
+		Data   []byte
+		Labels map[string]string
+	}{Name: "otel_config", Data: []byte("original")}
+
+	created, err := EnsureConfig(context.Background(), f, "otel_config", []byte("replacement"))
+	if err != nil {
+		t.Fatalf("EnsureConfig: %v", err)
+	}
+	if created {
+		t.Error("created = true, want false for pre-existing config")
+	}
+	if string(f.configs["otel_config"].Data) != "original" {
+		t.Error("EnsureConfig modified existing config data")
+	}
+}
+
+func TestEnsureConfig_AttachesManagedLabel(t *testing.T) {
+	f := newFakeDocker()
+
+	_, err := EnsureConfig(context.Background(), f, "labeled-config", []byte("data"))
+	if err != nil {
+		t.Fatalf("EnsureConfig: %v", err)
+	}
+	spec := f.configs["labeled-config"]
+	if spec.Labels[pmclusterLabel] != "true" {
+		t.Errorf("label %q = %q, want 'true'", pmclusterLabel, spec.Labels[pmclusterLabel])
+	}
+}

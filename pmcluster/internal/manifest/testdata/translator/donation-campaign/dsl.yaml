@@ -1,0 +1,37 @@
+app: donation-campaign
+env: production
+domain: example.com
+registry: ghcr.io/nextrum-sy
+version: latest
+secrets:
+  - donation_campaign_db_password
+volumes:
+  - db_data
+services:
+  db:
+    image: postgres:14-alpine
+    placement: manager
+    volumes: [db_data:/var/lib/postgresql/data]
+    env:
+      POSTGRES_DB: donation_campaign
+      POSTGRES_USER: user
+    secrets: [donation_campaign_db_password]
+    healthcheck:
+      type: pg_isready
+  migration:
+    image: ghcr.io/nextrum-sy/donation-campaign:latest
+    command: [./migrate]
+    run_once: true
+  api:
+    image: ghcr.io/nextrum-sy/donation-campaign:latest
+    replicas: 2
+    expose:
+      port: 8080
+      host: api.donation-campaign.example.com
+    healthcheck:
+      type: http
+      path: /health
+    update:
+      parallelism: 1
+      delay: 10s
+      order: start-first

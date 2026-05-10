@@ -1,0 +1,44 @@
+networks:
+  vault-app-net:
+    driver: overlay
+secrets:
+  vault_token:
+    external: true
+services:
+  server:
+    deploy:
+      labels:
+        application: vault-app
+        environment: staging
+        service: server
+        version: latest
+      placement:
+        constraints:
+        - node.role == manager
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      update_config:
+        delay: 10s
+        order: start-first
+        parallelism: 1
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: devroot
+    healthcheck:
+      interval: 10s
+      retries: 3
+      test:
+      - CMD-SHELL
+      - vault status
+      timeout: 5s
+    image: vault:1.15
+    networks:
+    - vault-app-net
+    secrets:
+    - vault_token
+    volumes:
+    - data_vol:/vault/data
+version: "3.9"
+volumes:
+  data_vol:
+    driver: local

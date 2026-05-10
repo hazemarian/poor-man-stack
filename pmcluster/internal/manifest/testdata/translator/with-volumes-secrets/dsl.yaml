@@ -1,0 +1,20 @@
+app: vault-app
+env: staging
+domain: example.com
+secrets:
+  - vault_token
+volumes:
+  - data_vol
+services:
+  server:
+    image: vault:1.15
+    placement: manager
+    env:
+      VAULT_DEV_ROOT_TOKEN_ID: devroot
+    secrets: [vault_token]
+    volumes: [data_vol:/vault/data]
+    healthcheck:
+      test: [CMD-SHELL, "vault status"]
+      interval: 10s
+      timeout: 5s
+      retries: 3

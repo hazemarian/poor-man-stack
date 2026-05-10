@@ -1,0 +1,9 @@
+app: web-app
+env: production
+domain: example.com
+services:
+  api:
+    image: nginx:latest
+    expose:
+      port: 8080
+      host: api.web-app.example.com

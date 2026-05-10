@@ -1,0 +1,86 @@
+version: "3.9"
+
+services:
+  openobserve:
+    image: public.ecr.aws/zinclabs/openobserve:v0.30.0
+    entrypoint: ["/bin/sh", "-c"]
+    # The email isn't sensitive; we substitute it directly. The password
+    # comes from a Swarm secret (read into ZO_ROOT_USER_PASSWORD via the
+    # shell wrapper because OpenObserve doesn't natively support _FILE env vars).
+    command:
+      - |
+        export ZO_ROOT_USER_PASSWORD=$$(cat /run/secrets/zo_root_user_password)
+        exec /go/bin/openobserve
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.role == manager]
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.openobserve.rule=Host(`observ.${DOMAIN}`)"
+        - "traefik.http.services.openobserve.loadbalancer.server.port=5080"
+        - "traefik.http.routers.openobserve.entrypoints=websecure"
+        - "traefik.http.routers.openobserve.tls=true"
+        - "traefik.swarm.network=traefik-net"
+    environment:
+      - ZO_DATA_DIR=/data
+      - ZO_HTTP_PORT=5080
+      - ZO_GRPC_PORT=5081
+      - ZO_TELEMETRY=false
+      - ZO_APP_NAME=openobserve
+      - ZO_ROOT_USER_EMAIL=${OPENOBSERVE_ADMIN_EMAIL}
+    secrets:
+      - zo_root_user_password
+    volumes:
+      - openobserve_data:/data
+    networks:
+      - monitoring-net
+      - traefik-net
+      
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.142.0
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    user: "0:0"
+    deploy:
+      mode: global
+      resources:
+        reservations:
+          cpus: '0.3'
+          memory: 256M
+        limits:
+          cpus: '0.4'
+          memory: 512M
+      restart_policy:
+        condition: any
+        delay: 5s
+    volumes:
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /etc/localtime:/etc/localtime:ro
+    configs:
+      - source: pmcluster_otel_config
+        target: /etc/otel-collector-config.yaml
+    networks:
+      - monitoring-net
+
+volumes:
+  openobserve_data:
+
+networks:
+  monitoring-net:
+    external: true
+  traefik-net:
+    external: true
+
+secrets:
+  zo_root_user_password:
+    external: true
+
+# Docker configs are created+managed by pmcluster cluster up. Replicated to
+# every node by Swarm itself, so the otel-collector global service can mount
+# the config without bind-mount-from-disk multi-node fragility.
+configs:
+  pmcluster_otel_config:
+    external: true

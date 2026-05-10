@@ -1,0 +1,95 @@
+networks:
+  donation-campaign-net:
+    driver: overlay
+  monitoring-net:
+    external: true
+  traefik-net:
+    external: true
+secrets:
+  donation_campaign_db_password:
+    external: true
+services:
+  api:
+    deploy:
+      labels:
+        application: donation-campaign
+        environment: production
+        service: api
+        traefik.docker.network: traefik-net
+        traefik.enable: "true"
+        traefik.http.routers.donation-campaign-api.entrypoints: websecure
+        traefik.http.routers.donation-campaign-api.rule: Host(`api.donation-campaign.example.com`)
+        traefik.http.routers.donation-campaign-api.tls: "true"
+        traefik.http.services.donation-campaign-api.loadbalancer.server.port: "8080"
+        version: latest
+      replicas: 2
+      restart_policy:
+        condition: on-failure
+      update_config:
+        delay: 10s
+        order: start-first
+        parallelism: 1
+    healthcheck:
+      interval: 10s
+      retries: 5
+      test:
+      - CMD-SHELL
+      - wget -q --spider http://localhost:8080/health
+      timeout: 5s
+    image: ghcr.io/nextrum-sy/donation-campaign:latest
+    networks:
+    - donation-campaign-net
+    - traefik-net
+    - monitoring-net
+  db:
+    deploy:
+      labels:
+        application: donation-campaign
+        environment: production
+        service: db
+        version: latest
+      placement:
+        constraints:
+        - node.role == manager
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      update_config:
+        delay: 10s
+        order: start-first
+        parallelism: 1
+    environment:
+      POSTGRES_DB: donation_campaign
+      POSTGRES_USER: user
+    healthcheck:
+      interval: 10s
+      retries: 5
+      test:
+      - CMD-SHELL
+      - pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB
+      timeout: 5s
+    image: postgres:14-alpine
+    networks:
+    - donation-campaign-net
+    secrets:
+    - donation_campaign_db_password
+    volumes:
+    - db_data:/var/lib/postgresql/data
+  migration:
+    command:
+    - ./migrate
+    deploy:
+      labels:
+        application: donation-campaign
+        environment: production
+        service: migration
+        version: latest
+      restart_policy:
+        condition: none
+    image: ghcr.io/nextrum-sy/donation-campaign:latest
+    networks:
+    - donation-campaign-net
+version: "3.9"
+volumes:
+  db_data:
+    driver: local

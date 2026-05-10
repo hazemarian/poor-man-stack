@@ -1,0 +1,28 @@
+[Unit]
+Description=pmcluster control plane (REST API + webhook receiver)
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Run as the user that owns ~/.pmcluster and is in the `docker` group.
+# Replace `pmcluster` with your install user (e.g. `ubuntu` on a fresh VPS).
+User=pmcluster
+Group=docker
+Environment=HOME=/home/pmcluster
+ExecStart=/usr/local/bin/pmcluster serve
+Restart=on-failure
+RestartSec=5s
+# StandardOutput/Error left at default (journal) — pmcluster also writes
+# its own JSON logs to ~/.pmcluster/logs/. Use `journalctl -u pmcluster`
+# for the latest console-formatted output, `pmcluster logs` for JSON.
+NoNewPrivileges=true
+# Tight FS hardening — pmcluster only ever writes to its data dir and the
+# docker socket. Readonly the rest.
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pmcluster/.pmcluster
+
+[Install]
+WantedBy=multi-user.target

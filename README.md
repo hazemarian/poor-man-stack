@@ -1,32 +1,36 @@
 # Poor Man's Cluster
 
-A simple, cost-effective, and production-ready deployment stack built on open-source tools. No Kubernetes, no managed cloud services, no expensive licensing — just Docker Swarm and a handful of well-chosen tools that get the job done.
+A simple, cost-effective, production-ready deployment stack on open-source tools. No Kubernetes, no managed cloud services, no expensive licensing — just Docker Swarm, a small Go control plane (`pmcluster`), and a handful of well-chosen tools that get the job done.
 
-This project gives you a full production cluster with ingress, observability, GitOps deployments, and automated backups, all configured and ready to run from a single setup script.
+This project gives you a full production cluster with HTTPS ingress, observability, programmatic deployments, automated backups, and a single CLI to manage it.
+
+The control plane is a single static Go 1.25 binary (`pmcluster`, ~25 MB, no cgo) that brings the cluster up, deploys applications via a small DSL with versioned rollbacks, accepts HMAC-verified webhooks from CI, manages registry credentials and bootstrap passwords, and ships its own JSON audit logs.
+
+- **Design + trade-offs:** [RFC v2 — issue #1](https://github.com/hazemarian/poor-man-stack/issues/1) (what actually shipped)
+- **Phase-by-phase implementation log:** [`docs/refactor-plan.md`](docs/refactor-plan.md)
 
 ---
 
 ## How It Works
 
-The stack runs on Docker Swarm. One machine acts as the **manager node** — it controls the cluster, hosts the management UIs, and deploys stacks. Any number of **worker nodes** can be added by running a single script; the manager automatically schedules services across them.
+The stack runs on Docker Swarm. One machine acts as the **manager node** — it controls the cluster, hosts the management UIs, and runs `pmcluster`. Any number of **worker nodes** can join with `docker swarm join`; the manager automatically schedules global services on them.
 
 Two overlay networks connect everything:
 
-- **`traefik-net`** — carries application traffic between Traefik and your services
-- **`monitoring-net`** — carries telemetry (logs, metrics, traces) between services and OpenObserve
+- **`traefik-net`** — application traffic between Traefik and your services
+- **`monitoring-net`** — telemetry (logs, metrics, traces) between services and OpenObserve
 
-All sensitive credentials (passwords, TLS certificates) are stored as Docker Swarm secrets — encrypted at rest and in transit, never written to disk or environment variables.
-
-Deployments are GitOps-driven: push a change to your Git repository and Portainer automatically pulls and redeploys the affected stack.
+All sensitive credentials are stored as Docker Swarm secrets (encrypted at rest and in transit) AND mirrored encrypted in `pmcluster`'s SQLite for retrieval. The bootstrap admin passwords for Traefik/Portainer/OpenObserve are generated randomly on first `cluster up` — no `.env` editing required.
 
 ```
 Internet
    │
    ▼
-Traefik (HTTPS ingress, auto-routes via Docker labels)
+Traefik (HTTPS ingress, auto-routes via Docker labels + file provider)
    ├──▶ Your App(s)
-   ├──▶ Portainer (management UI)
-   └──▶ OpenObserve (observability UI)
+   ├──▶ Portainer (operator UI)
+   ├──▶ OpenObserve (observability UI)
+   └──▶ pmcluster (REST/webhook API; runs on the host, not in a container)
 
 Your App(s) ──OTLP──▶ OTel Collector ──▶ OpenObserve
 Traefik     ──OTLP──▶ OTel Collector ──▶ OpenObserve
@@ -39,19 +43,35 @@ Every node: OTel Collector + Backup Agent (global services)
 ## Stack Components
 
 ### Traefik — Ingress & API Gateway
-Traefik sits at the edge and routes all HTTPS traffic to the right service based on Docker labels. No config files to edit when you add a new service — just add labels to your Compose file and Traefik picks it up automatically. TLS certificates are loaded from Docker Swarm secrets. Built-in OpenTelemetry support sends traces and metrics to the collector.
+Sits at the edge and routes HTTPS traffic to the right service based on Docker labels (for swarm services) and a file provider (for the pmcluster route + TLS certificates). TLS certs are loaded from Swarm secrets. Built-in OpenTelemetry support sends traces and metrics to the collector.
 
-### Portainer — Management UI & GitOps Controller
-Portainer provides a web UI for the entire cluster. More importantly, it acts as the GitOps controller: point it at a Git repository containing your Compose files and it will watch for changes and redeploy automatically. Secrets, stacks, and node management are all available from a single interface.
+### Portainer — Operator UI
+Read/operate UI for the cluster: view services, restart, exec into containers, tail logs. **Not used for GitOps anymore** — `pmcluster` owns deployment. May be replaced by something smaller (Komodo is a candidate) later.
 
 ### OpenObserve — Observability (Logs, Metrics, Traces)
-A single lightweight binary that replaces the entire Grafana + Loki + Prometheus + Tempo stack. It ingests logs, metrics, and traces via OTLP and stores them efficiently (approximately 140x lower storage cost than Elasticsearch-based stacks). All three signal types are queryable in one UI.
+Lightweight all-in-one observability platform. Single binary, one UI, ~140× lower storage cost than Elasticsearch-based stacks. Receives OTLP from the OTel Collector.
 
 ### OpenTelemetry Collector — Telemetry Aggregation
-Runs as a global service on every node in the cluster. It automatically discovers all running containers via the Docker observer, tails their logs, enriches them with Swarm metadata (service name, stack, node ID), collects Docker resource metrics (CPU, memory, network), and forwards everything to OpenObserve via OTLP.
+Runs as a global service on every node. Auto-discovers containers via the Docker observer, tails their logs, enriches with Swarm metadata, collects Docker resource metrics, forwards everything to OpenObserve. The pipeline config is generated by pmcluster and shipped as a Docker config (replicated to every node by Swarm itself).
 
 ### offen/docker-volume-backup — Automated Backups
-Runs as a global service on every node. Performs nightly backups of all Docker volumes on that node, names them with the node ID to avoid conflicts, retains 7 days of history, and can optionally push archives to any S3-compatible object store.
+Runs as a global service on every node. Nightly tarballs of all Docker volumes, named with the node ID, 7-day retention, optional S3 upload.
+
+### pmcluster — Control Plane (Go)
+Single static binary, lives on the manager host. Replaces the bash setup script and Portainer's GitOps role.
+
+- `pmcluster init` — creates `~/.pmcluster/` (SQLite + encryption key) and prints a one-time bootstrap admin token for the API
+- `pmcluster cluster up` — brings the cluster up: preflight, networks, TLS secrets, bootstrap credentials, OTel + Traefik configs, deploy stacks. Prints all bootstrap passwords in a clearly-marked block at the end.
+- `pmcluster cluster status` / `cluster down`
+- `pmcluster serve` — runs the long-running daemon (REST API + webhook receiver). Listens on `127.0.0.1:9090`; Traefik routes `pmcluster.<domain>` to it via `host.docker.internal:host-gateway`.
+- `pmcluster deploy <file>` / `pmcluster stack list|show` / `pmcluster rollback <stack> <rev>` — DSL-based application deploys with versioned rollback
+- `pmcluster credentials list|show|rotate` — managed bootstrap passwords (Traefik / Portainer / OpenObserve)
+- `pmcluster registry add|list|remove` — Docker registry credentials, replayed on `serve` startup so private images keep pulling
+- `pmcluster webhook add|list|remove` — HMAC-signed webhook sources for CI integrations
+- `pmcluster backup create|list` — on-demand offen volume snapshots; deploys can opt-in via `backup_before_deploy: true`
+- `pmcluster node list|join-token` — wraps `docker node` for the read paths
+- `pmcluster user create <name>` — issue API tokens for additional users
+- `pmcluster logs [--tail=N] [--since=24h] [--follow]` — tail the JSON audit log at `~/.pmcluster/logs/`. Files rotate daily, swept after 14 days.
 
 ---
 
@@ -59,60 +79,124 @@ Runs as a global service on every node. Performs nightly backups of all Docker v
 
 ```
 poor-man-stack/
-├── bin/
-│   └── setup.sh                            # All setup logic lives here (manager + worker)
-├── .env.example                            # All config vars — copy to .env and fill in
-├── main-node/
-│   ├── setup.sh                            # Thin wrapper: calls bin/setup.sh manager
-│   ├── infra-stack.yml                     # Traefik + Portainer
-│   ├── observability-stack.yml             # OpenObserve + OTel Collector
-│   ├── backup-stack.yml                    # Volume backup agent
-│   ├── otel-collector-config.yaml.template # OTel pipeline config template
-│   └── traefik-dynamic.yml                 # TLS certificate wiring for Traefik
-└── worker-node/
-    └── setup.sh                            # Thin wrapper: calls bin/setup.sh worker
+├── pmcluster/                          # Go control plane (Cobra CLI + HTTP daemon)
+│   ├── cmd/pmcluster/                  # entry point
+│   ├── internal/
+│   │   ├── cli/                        # Cobra command tree
+│   │   ├── config/, store/, auth/      # config, SQLite, bearer-token auth
+│   │   ├── server/, api/               # chi HTTP server + handlers
+│   │   ├── docker/                     # SDK wrapper behind a small interface
+│   │   ├── cluster/                    # cluster lifecycle (preflight, networks,
+│   │   │                               # secrets, configs, stacks, up, down, status)
+│   │   │   └── embeds/                 # bundled compose YAMLs (//go:embed)
+│   │   ├── credentials/                # AES-GCM encryption for stored creds
+│   │   └── buildinfo/                  # version/commit/date with VCS fallback
+│   ├── migrations/                     # *.sql, embedded via //go:embed
+│   └── e2e/                            # smoke end-to-end tests
+├── docs/
+│   └── refactor-plan.md                # Active refactor plan + status
+└── README.md
 ```
-
-> **Note:** `main-node/otel-collector-config.yaml` is generated at deploy time from the template and is gitignored — it contains your OpenObserve auth token.
 
 ---
 
 ## Getting Started
 
-### 1. Manager Node
+### Prerequisites
+
+On the manager node:
+- Docker Engine 20.10+ installed (`docker --version`).
+- Swarm initialised (`docker swarm init --advertise-addr <ip>`). pmcluster intentionally does NOT init Swarm — that decision belongs to the operator.
+- A TLS certificate + key (file paths, any CA — internal, purchased, or wildcard).
+
+### 1. Install pmcluster
+
+One-line install (latest release):
 
 ```bash
-cp .env.example .env
-# Edit .env with your domain, credentials, and TLS certificate paths
-./main-node/setup.sh
-# or equivalently: ./bin/setup.sh manager
+curl -fsSL https://raw.githubusercontent.com/hazemarian/poor-man-stack/main/install.sh | bash
 ```
 
-The script will:
-1. Install Docker if not present
-2. Initialise Docker Swarm
-3. Create overlay networks (`traefik-net`, `monitoring-net`)
-4. Create all Docker Swarm secrets from your `.env` values
-5. Deploy the infrastructure, observability, and backup stacks
+The script picks the right `darwin|linux` × `arm64|amd64` archive from the [GitHub releases](https://github.com/hazemarian/poor-man-stack/releases), verifies its SHA256, and drops the binary in `/usr/local/bin/pmcluster` (override with `PREFIX=…` or pin a version with `VERSION=v0.2.0`).
 
-Once complete, your dashboards will be live at:
+Or build from source (requires Go 1.25+):
+
+```bash
+cd pmcluster
+make build           # → ./bin/pmcluster
+sudo install -m 0755 bin/pmcluster /usr/local/bin/
+```
+
+### 2. Bring the cluster up
+
+```bash
+pmcluster init                          # creates ~/.pmcluster, prints admin token
+
+pmcluster cluster up \
+  --domain=example.com \
+  --cert=/path/to/cert.pem \
+  --key=/path/to/key.pem \
+  --openobserve-email=admin@example.com
+```
+
+`cluster up` is idempotent — re-runs reconcile, never destroy or rotate.
+
+It will:
+1. Preflight (Docker reachable, Swarm active, this node is a manager)
+2. Create the `traefik-net` and `monitoring-net` overlay networks
+3. Load the cert/key into Swarm secrets
+4. Generate random bootstrap passwords for Traefik / Portainer / OpenObserve, store encrypted in SQLite, mirror to Swarm secrets
+5. Render the OTel + Traefik dynamic configs in-process and create them as Docker configs (Swarm replicates to every node)
+6. Deploy the `infra`, `observability`, and `backup` stacks via `docker stack deploy`
+
+The bootstrap passwords are printed **once** at the end. Save them, or retrieve them later:
+
+```bash
+pmcluster credentials list
+pmcluster credentials show portainer
+```
+
+Once DNS resolves, the dashboards are live at:
 - `https://traefik.<your-domain>` — Traefik dashboard
 - `https://portainer.<your-domain>` — Portainer
 - `https://observ.<your-domain>` — OpenObserve
+- `https://pmcluster.<your-domain>` — pmcluster API/UI (once `pmcluster serve` is running)
 
-### 2. Worker Nodes (optional)
-
-On each additional machine:
+### 3. Run the pmcluster daemon
 
 ```bash
-# Set MANAGER_IP and SWARM_JOIN_TOKEN in .env (get the token from the manager: docker swarm join-token worker)
-./worker-node/setup.sh
-# or equivalently: ./bin/setup.sh worker
+pmcluster serve                         # foreground; ^C to stop
 ```
 
-The worker joins the Swarm and the manager automatically schedules the OTel Collector and backup agent on it.
+Production: supervise via systemd. A starter unit ships at [`pmcluster/contrib/systemd/pmcluster.service`](pmcluster/contrib/systemd/pmcluster.service) — copy to `/etc/systemd/system/`, edit the `User=` line for your install user, then `systemctl enable --now pmcluster`.
 
-### Required Firewall Ports (manager ↔ worker)
+Inspect the daemon's audit log:
+
+```bash
+pmcluster logs --tail=200               # most recent JSON lines
+pmcluster logs --since=24h --follow     # stream new entries
+pmcluster logs --tail=200 | jq 'select(.level=="error")'
+```
+
+JSON files live at `~/.pmcluster/logs/pmcluster-YYYY-MM-DD.log` and are swept after 14 days.
+
+### 4. Add worker nodes (optional)
+
+On each additional machine — install Docker, then a single command:
+
+```bash
+docker swarm join --token <TOKEN> <MANAGER_IP>:2377
+```
+
+Get the token from the manager:
+
+```bash
+docker swarm join-token worker
+```
+
+The manager automatically schedules the OTel Collector and the volume backup agent on the new node. No script, no config file.
+
+#### Required Firewall Ports (manager ↔ worker)
 
 | Port | Protocol | Purpose |
 |------|----------|---------|
@@ -122,76 +206,152 @@ The worker joins the Swarm and the manager automatically schedules the OTel Coll
 
 ---
 
-## Deploying Your Own Services
+## Tear Down
 
-Add your service to a Docker Compose file and include Traefik labels:
-
-```yaml
-services:
-  my-app:
-    image: my-image
-    networks:
-      - traefik-net
-      - monitoring-net
-    deploy:
-      labels:
-        - "traefik.enable=true"
-        - "traefik.http.routers.my-app.rule=Host(`app.example.com`)"
-        - "traefik.http.routers.my-app.entrypoints=websecure"
-        - "traefik.http.routers.my-app.tls=true"
-        - "traefik.http.services.my-app.loadbalancer.server.port=3000"
-
-networks:
-  traefik-net:
-    external: true
-  monitoring-net:
-    external: true
+```bash
+pmcluster cluster down --yes              # removes infra/observability/backup stacks
+pmcluster cluster down --yes --purge      # also removes pmcluster-managed secrets,
+                                          # configs, and overlay networks
 ```
 
-Push the file to your Git repository and Portainer deploys it automatically.
+`~/.pmcluster` (encryption key + SQLite) is **not** removed by `--purge`. Delete the directory manually for a fully clean slate; understand that doing so makes encrypted credentials unrecoverable.
 
 ---
 
-## Minimum Hardware Requirements
+## Deploying Your Own Services
+
+`pmcluster deploy` accepts a small higher-level DSL and translates it to the verbose Docker Swarm Compose YAML, eliminating the boilerplate (Traefik labels, networks block, app/env/version labels, secret/network wiring, restart/update policies).
+
+### Manifest shape
+
+```yaml
+app: donation-campaign
+env: production
+domain: example.com
+registry: ghcr.io/nextrum-sy
+version: latest                # overridable via --version flag at deploy time
+
+secrets:
+  - donation_campaign_db_password   # external Swarm secret you've already created
+
+volumes: [db_data]
+
+services:
+  db:
+    image: postgres:14-alpine
+    placement: manager
+    volumes: [db_data:/var/lib/postgresql/data]
+    env: { POSTGRES_DB: donation_campaign, POSTGRES_USER: user }
+    secrets: [donation_campaign_db_password]
+    healthcheck: { type: pg_isready }
+
+  migration:
+    image: ${registry}/${app}:${version}
+    command: [./migrate]
+    run_once: true                  # → restart_policy: condition: none
+
+  api:
+    image: ${registry}/${app}:${version}
+    replicas: 2
+    expose: { port: 8080, host: api.${app}.${domain} }   # auto-wires Traefik
+    healthcheck: { type: http, path: /health }
+```
+
+Substitution: `${app}`, `${env}`, `${version}`, `${registry}`, `${domain}`, plus `${env:VAR}` for OS env. Strict YAML — unknown keys are rejected.
+
+### Deploy
+
+Locally, on the manager:
+
+```bash
+pmcluster deploy ./donation-campaign.yaml [--version <tag>] [--app <name>] [--repo <url>]
+```
+
+Remotely, via the HTTP API:
+
+```bash
+curl -X POST https://pmcluster.example.com/api/stacks \
+     -H "Authorization: Bearer <admin-token>" \
+     -H "Content-Type: application/json" \
+     -d "{\"manifest\": $(jq -Rs . < donation-campaign.yaml)}"
+```
+
+### Inspect, list, roll back
+
+```bash
+pmcluster stack list                      # name, current revision, last update
+pmcluster stack show donation-campaign    # metadata + recent revisions (→ marks current)
+pmcluster rollback donation-campaign 1778439014   # re-apply a stored revision
+```
+
+Every deploy gets a unix-timestamp revision id. Rollback re-applies a stored revision as a NEW revision (preserves the audit trail — both deploys are recorded). The corresponding REST endpoints are `GET /api/stacks`, `GET /api/stacks/{name}`, `GET /api/stacks/{name}/revisions/{rev}`, `POST /api/stacks/{name}/rollback`.
+
+### Webhooks (CI integrations)
+
+```bash
+pmcluster webhook add github-prod      # prints a 64-char hex secret ONCE; save it
+```
+
+CI side — sign the request body with HMAC-SHA256 keyed by that secret string and POST to `/webhook/<source>`:
+
+```bash
+SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "$SECRET" | awk '{print "sha256=" $2}')
+curl -X POST https://pmcluster.example.com/webhook/github-prod \
+     -H "X-Pmcluster-Signature: $SIG" \
+     -H "Content-Type: application/json" \
+     -d "$BODY"
+```
+
+The webhook returns the same generic 401 for "wrong secret", "wrong source", and "missing signature" — no information leak about which case tripped.
+
+### Private registries
+
+```bash
+pmcluster registry add ghcr.io                # prompts for username + password
+pmcluster registry list
+```
+
+`pmcluster serve` re-runs `docker login` for every persisted registry on startup, so a manager rebuild that wiped `~/.docker/config.json` keeps pulling private images via `--with-registry-auth`.
+
+### Pre-deploy backups
+
+Add `backup_before_deploy: true` to a manifest's top level and pmcluster will trigger an offen volume snapshot before `docker stack deploy`. The deploy proceeds even if the backup fails (a flaky backup container shouldn't block urgent rollouts) — failures show up loud in `pmcluster backup list`.
+
+```bash
+pmcluster backup create                       # on-demand snapshot
+pmcluster backup list                         # audit log of every triggered run
+```
+
+Restore is a known design gap, sketched in [`pmcluster/docs/restore-design.md`](pmcluster/docs/restore-design.md).
+
+---
+
+## Minimum Hardware
 
 | Node | CPU | RAM | Notes |
 |------|-----|-----|-------|
-| Manager | 2 vCPU | 4 GB | Runs Traefik, Portainer, OpenObserve, OTel Collector, and Backup Agent |
-| Worker | 1 vCPU | 1 GB | Runs OTel Collector and Backup Agent; more needed for your application workloads |
+| Manager | 2 vCPU | 4 GB | Traefik + Portainer + OpenObserve + OTel Collector + Backup Agent + pmcluster |
+| Worker | 1 vCPU | 1 GB | OTel Collector + Backup Agent + your application workloads |
 
-OpenObserve alone requires approximately 512 MB RAM at idle. On a manager with less than 4 GB, it will compete with Portainer and Traefik under load. 2 GB is the bare minimum and will be tight.
+OpenObserve alone needs ~512 MB RAM at idle. On a manager with less than 4 GB it will compete with Portainer and Traefik under load.
 
 ---
 
 ## TLS Certificates & Renewal
 
-The stack is configured to load TLS certificates from Docker Swarm secrets (`cert` and `key`). This gives you full control over which certificate authority you use — including internal CAs, purchased certificates, or wildcard certs.
-
-**Renewing a certificate:**
+Certificates are loaded from Swarm secrets named `cert` and `key`. To rotate:
 
 ```bash
-# Remove the old secrets
 docker secret rm cert key
-
-# Create new ones from updated files
-cat /path/to/new.crt | docker secret create cert -
-cat /path/to/new.key | docker secret create key -
-
-# Redeploy Traefik to pick up the new secrets
+pmcluster cluster up \
+  --domain=example.com \
+  --cert=/path/to/new.pem \
+  --key=/path/to/new.key.pem \
+  --openobserve-email=admin@example.com   # everything else preserved
 docker service update --force infra_traefik
 ```
 
-**Automatic renewal with Let's Encrypt (optional):**
-
-To enable automatic ACME certificate provisioning, add the following to the Traefik `command:` block in `main-node/infra-stack.yml` and mount an `acme.json` volume on the manager:
-
-```yaml
-- "--certificatesresolvers.le.acme.email=your@email.com"
-- "--certificatesresolvers.le.acme.storage=/acme/acme.json"
-- "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web"
-```
-
-Then replace `tls=true` with `tls.certresolver=le` on your service routers.
+Automatic Let's Encrypt support can be added later by extending the embedded Traefik config in `pmcluster/internal/cluster/embeds/infra-stack.yml`.
 
 ---
 
@@ -199,51 +359,25 @@ Then replace `tls=true` with `tls.certresolver=le` on your service routers.
 
 OpenObserve has a built-in alerting engine. Once your stack is running, set up alerts via the OpenObserve UI under **Alerts → Alert Rules**. Recommended starting points:
 
-- **Service down** — alert when a service stops sending logs or metrics for more than 5 minutes
-- **High error rate** — alert when `severity_text = ERROR` log count spikes above a threshold
-- **High memory usage** — alert on `container.memory.usage` metrics from the OTel Collector
+- **Service down** — alert when a service stops sending logs/metrics for >5 min
+- **High error rate** — alert when `severity_text = ERROR` log count spikes
+- **High memory usage** — alert on `container.memory.usage` from the OTel Collector
 
-Alerts can notify via email, Slack webhook, or any HTTP endpoint.
+Notifications: email, Slack webhook, any HTTP endpoint.
 
 ---
 
 ## License
 
-This project is licensed under the **MIT License**.
-
-```
-MIT License
-
-Copyright (c) 2025 Hazem Arian
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
+MIT. Copyright © 2025 Hazem Arian.
 
 ---
 
 ## RFC & Discussion
 
-The full design proposal for this stack — including architecture decisions, component rationale, and alternatives considered — is tracked as an open RFC:
+The current design — what actually shipped — lives in **[issue #1: RFC v2](https://github.com/hazemarian/poor-man-stack/issues/1)**. It covers the architecture, the trade-offs vs. the original v1 pitch, and what's intentionally out of scope.
 
-**[RFC: A Simple, Cost-Effective, and Industry-Standard Deployment Stack #1](https://github.com/hazemarian/poor-man-stack/issues/1)**
-
-Feedback, questions, and suggestions are welcome directly on that issue.
+Phase-by-phase implementation log: [`docs/refactor-plan.md`](docs/refactor-plan.md).
 
 ---
 
@@ -254,4 +388,4 @@ Built and maintained by **Hazem Arian**.
 - Email: [hazeem.arian@gmail.com](mailto:hazeem.arian@gmail.com)
 - LinkedIn: [linkedin.com/in/hazem-a-467b4183](https://www.linkedin.com/in/hazem-a-467b4183/)
 
-Contributions, issues, and feedback are welcome.
+Contributions, issues, and feedback welcome.

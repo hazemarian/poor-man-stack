@@ -1,0 +1,6 @@
+app: minimal-app
+env: production
+domain: example.com
+services:
+  worker:
+    image: busybox:latest

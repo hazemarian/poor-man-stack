@@ -1,0 +1,22 @@
+networks:
+  minimal-app-net:
+    driver: overlay
+services:
+  worker:
+    deploy:
+      labels:
+        application: minimal-app
+        environment: production
+        service: worker
+        version: latest
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      update_config:
+        delay: 10s
+        order: start-first
+        parallelism: 1
+    image: busybox:latest
+    networks:
+    - minimal-app-net
+version: "3.9"
