@@ -12,28 +12,24 @@ import (
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/store"
 )
 
-// BackupTrigger is the same shape as deploy.BackupTrigger; redeclared here
-// so the API package doesn't need to import deploy.
+// BackupTrigger mirrors deploy.BackupTrigger so api doesn't import deploy.
 type BackupTrigger interface {
 	Trigger(ctx context.Context) ([]string, error)
 }
 
-// BackupsHandler bundles deps for the /api/backups routes. Mount it under
-// the /api group so Bearer auth applies.
+// BackupsHandler — Trigger is optional; POST /api/backups returns 503 when nil.
 type BackupsHandler struct {
 	Store   *store.Store
-	Trigger BackupTrigger // optional — POST /api/backups returns 503 when nil
+	Trigger BackupTrigger
 }
 
-// Mount wires GET /api/backups, POST /api/backups, GET /api/stacks/{name}/backups.
 func (h *BackupsHandler) Mount(r chi.Router) {
 	r.Get("/backups", h.list)
 	r.Post("/backups", h.create)
-	// stack-scoped listing lives on the existing stacks tree; mount via Mount on caller side.
 }
 
-// MountStackScoped wires the /stacks/{name}/backups route. Callers attach
-// this to the same group that mounts /stacks so the URL shape is stable.
+// MountStackScoped is split out so the route can attach to the same
+// /stacks subtree as StacksHandler.
 func (h *BackupsHandler) MountStackScoped(r chi.Router) {
 	r.Get("/stacks/{name}/backups", h.listForStack)
 }

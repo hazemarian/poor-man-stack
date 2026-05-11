@@ -30,41 +30,31 @@ import (
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/store"
 )
 
-// SignatureHeader is where callers MUST place their HMAC signature.
-// Format: "sha256=<lowercase-hex>". Extra "sha256=" prefix is the same
-// shape GitHub/GitLab use, so off-the-shelf CI integrations work.
+// SignatureHeader format: "sha256=<lowercase-hex>". Matches GitHub/GitLab
+// so off-the-shelf CI integrations work.
 const SignatureHeader = "X-Pmcluster-Signature"
 
-// MaxBodyBytes is the upper bound on a webhook body. Manifests are tiny
-// (<10 KB typically); 1 MB leaves comfortable headroom and prevents trivial
-// memory-exhaustion attacks on the HMAC compute step.
+// MaxBodyBytes caps the webhook body. Manifests are <10 KB typically;
+// 1 MB leaves headroom and bounds HMAC compute cost from hostile callers.
 const MaxBodyBytes = 1 << 20
 
-// Handler bundles the dependencies the webhook receiver needs.
 type Handler struct {
-	Store        *store.Store
-	Cipher       *credentials.Cipher
-	Service      *deploy.Service
+	Store   *store.Store
+	Cipher  *credentials.Cipher
+	Service *deploy.Service
 }
 
-// Mount registers POST /webhook/{source}. Caller is responsible for placing
-// this OUTSIDE the Bearer-protected /api/* subtree (no token required —
-// HMAC IS the auth).
+// Mount registers POST /webhook/{source}. Caller MUST place this outside
+// the Bearer-protected /api subtree — HMAC IS the auth.
 func (h *Handler) Mount(r chi.Router) {
 	r.Post("/webhook/{source}", h.receive)
 }
 
-// receive verifies the HMAC, decodes the payload, calls deploy.Service,
-// and renders a JSON response. All failure modes return JSON; success is
-// 200 with {stack, revision}.
-//
 // HTTP status discipline:
-//   - 401 — missing or invalid signature, OR unknown source. We deliberately
-//           return the SAME status for both so an attacker can't tell the
-//           difference between "source doesn't exist" and "wrong secret".
-//   - 400 — body is too large, malformed JSON, or fails deploy validation
-//           (returned by deploy.Service.Deploy with the original error message).
-//   - 502 — Docker SDK / docker stack deploy returned an error.
+//   - 401: any HMAC failure mode (missing/invalid sig, unknown source).
+//     Same status for all so an attacker can't distinguish the cases.
+//   - 400: body too large, malformed JSON, or deploy validation failure.
+//   - 502: docker stack deploy returned an error.
 func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 	source := chi.URLParam(r, "source")
 	if source == "" {
@@ -83,16 +73,13 @@ func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.verifyHMAC(r.Context(), source, body, r.Header.Get(SignatureHeader)); err != nil {
-		// SAME 401 for every failure mode — never reveal which of "unknown
-		// source" / "missing signature" / "wrong digest" actually tripped.
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		return
 	}
 
-	// Mark used AFTER HMAC succeeds (regardless of whether the deploy
-	// itself succeeds). This makes `pmcluster webhook list` useful for
-	// "is this CI integration actually hitting us" — even a malformed
-	// payload from a known source counts as proof-of-life.
+	// Mark used AFTER HMAC verifies, regardless of deploy outcome — useful
+	// for "is this CI integration actually hitting us" (a malformed payload
+	// from a known source still counts as proof-of-life).
 	_ = h.Store.MarkWebhookSourceUsed(r.Context(), source)
 
 	var p deploy.Payload
@@ -103,9 +90,6 @@ func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 
 	res, err := h.Service.Deploy(r.Context(), p)
 	if err != nil {
-		// Bias toward 502 since the most likely source of error here is a
-		// docker stack deploy failure. Manifest validation errors come
-		// through this same bucket — operator inspects the message body.
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
 	}
@@ -116,12 +100,8 @@ func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// verifyHMAC fetches the source's secret, computes HMAC-SHA256 over the
-// body, and compares it to the supplied signature in constant time.
-//
-// Returns a non-nil error for ANY failure (unknown source, missing
-// signature, wrong format, mismatched digest). Caller surfaces a single
-// 401 — never reveal which case it was.
+// verifyHMAC returns a non-nil error for ANY failure mode. Caller maps
+// every error to a single 401 to avoid leaking auth state.
 func (h *Handler) verifyHMAC(ctx context.Context, source string, body []byte, sigHeader string) error {
 	if sigHeader == "" {
 		return errors.New("missing signature header")

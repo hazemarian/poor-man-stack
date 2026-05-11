@@ -16,29 +16,19 @@ import (
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/store"
 )
 
-// deployCmd is the local-CLI deploy path. It opens the SQLite DB and
-// shells out to docker stack deploy directly — same code path the daemon
-// uses, just without the HTTP hop. Equivalent to:
-//
-//	curl -X POST https://pmcluster.<domain>/api/stacks \
-//	     -H "Authorization: Bearer <token>" \
-//	     --data-binary @manifest.yaml
-//
-// but doesn't need the daemon running. Must run on the manager node (needs
-// docker.sock + the pmcluster data dir).
 var deployCmd = &cobra.Command{
 	Use:   "deploy <manifest.yaml>",
 	Short: "Deploy or update a stack from a DSL manifest file",
 	Long: `Reads a pmcluster DSL manifest from disk, parses → interpolates →
-validates → translates to Docker Swarm Compose, records a new revision in
-SQLite, and applies it via 'docker stack deploy'.
+validates → translates to Docker Swarm Compose, records a new revision
+in SQLite, and applies it via 'docker stack deploy'.
 
-Idempotent: re-running with the same manifest produces a new revision and
-re-applies (Docker reconciles services in place). Each deploy gets a unix-
-timestamp revision id; rollback re-applies a stored one.
+Idempotent: re-running produces a new revision and re-applies (Docker
+reconciles in place). Each deploy gets a unix-timestamp revision id;
+rollback re-applies a stored one.
 
-Run on the manager node — needs access to the pmcluster data dir AND the
-Docker socket. For remote deploys, hit the HTTP API directly.`,
+Must run on the manager (needs docker.sock + the pmcluster data dir).
+For remote deploys, hit the HTTP API directly.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runDeploy,
 }
@@ -64,10 +54,9 @@ var stackShowCmd = &cobra.Command{
 var rollbackCmd = &cobra.Command{
 	Use:   "rollback <stack-name> <revision>",
 	Short: "Re-apply a stored revision as a new revision",
-	Long: `Loads the stored rendered YAML for the named revision and applies it as
-a NEW revision (preserves audit trail — both deploys are recorded).`,
-	Args: cobra.ExactArgs(2),
-	RunE: runRollback,
+	Long:  `Re-applies the stored rendered YAML as a NEW revision so both deploys are recorded in the audit trail.`,
+	Args:  cobra.ExactArgs(2),
+	RunE:  runRollback,
 }
 
 func init() {
@@ -80,9 +69,8 @@ func init() {
 	rootCmd.AddCommand(deployCmd, stackCmd, rollbackCmd)
 }
 
-// openDeploySvc shares the boilerplate (load config → open store → build
-// service) across all four deploy/stack commands. Returns a closer that
-// the caller MUST defer.
+// openDeploySvc shares the boilerplate across the deploy/stack commands.
+// Caller MUST defer the returned closer.
 func openDeploySvc(cmd *cobra.Command) (*deploy.Service, *store.Store, func(), error) {
 	st, _, err := openStore()
 	if err != nil {

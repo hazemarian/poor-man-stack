@@ -1,12 +1,6 @@
-// Package docker wraps the Docker Engine SDK behind a small interface so the
-// rest of pmcluster (cluster bootstrap, manifest deploy, registry, nodes)
-// can be tested with fakes instead of needing a real /var/run/docker.sock.
-//
-// Methods grow phase by phase:
-//   - Phase 1.6: Ping, Info
-//   - Phase 2:   NetworkExists/Create, SecretExists/Create (cluster bootstrap)
-//   - Phase 3:   ServiceCreate/Update for manifest deploys
-//   - Phase 4:   NodeList, ServiceLogs, RegistryAuth
+// Package docker wraps the Docker Engine SDK behind a small interface so
+// the rest of pmcluster can be tested with fakes instead of needing a
+// real /var/run/docker.sock.
 package docker
 
 import (
@@ -21,49 +15,33 @@ import (
 	"github.com/docker/docker/errdefs"
 )
 
-// Client is the contract pmcluster needs from a Docker daemon. Subset of
-// the official SDK; tests inject a fake.
+// Client is the contract pmcluster needs from a Docker daemon — a subset
+// of the official SDK. *Exists/*Create methods collapse "not found" to
+// (false, nil); idempotency is the caller's job. *Remove methods are
+// idempotent (nil on missing).
 type Client interface {
 	Ping(ctx context.Context) (Ping, error)
 	Info(ctx context.Context) (Info, error)
 
-	// NetworkExists returns true iff a network with the given name is present.
-	// Does NOT distinguish between "not found" and "transient API error" —
-	// both surface as a non-nil error from the wrapped SDK call, except for
-	// "not found" which we collapse to (false, nil).
 	NetworkExists(ctx context.Context, name string) (bool, error)
-
-	// NetworkCreate creates an overlay/attachable network. Idempotency is
-	// the caller's job (use NetworkExists first).
 	NetworkCreate(ctx context.Context, spec NetworkSpec) error
 
-	// SecretExists is the secret analogue of NetworkExists.
 	SecretExists(ctx context.Context, name string) (bool, error)
-
-	// SecretCreate creates a Swarm secret. Idempotency is the caller's job.
 	SecretCreate(ctx context.Context, spec SecretSpec) error
 
-	// ConfigExists / ConfigCreate are the Docker-config analogues of the
-	// secret methods. Configs are immutable, replicated to every node by
-	// Swarm, and used here for the OTel pipeline + Traefik dynamic configs.
 	ConfigExists(ctx context.Context, name string) (bool, error)
 	ConfigCreate(ctx context.Context, spec ConfigSpec) error
 
-	// Removal methods used by `pmcluster cluster down --purge`. Each returns
-	// nil if the resource doesn't exist (idempotent teardown).
 	SecretRemove(ctx context.Context, name string) error
 	ConfigRemove(ctx context.Context, name string) error
 	NetworkRemove(ctx context.Context, name string) error
 
-	// Node management (Phase 4.C). NodeList returns one Node per swarm
-	// member; JoinTokens returns the current Worker/Manager join tokens.
 	NodeList(ctx context.Context) ([]Node, error)
 	JoinTokens(ctx context.Context) (JoinTokens, error)
 
 	Close() error
 }
 
-// Ping is a minimal liveness response from the daemon.
 type Ping struct {
 	APIVersion   string
 	OSType       string
@@ -84,17 +62,15 @@ type Info struct {
 	SwarmNodes            int
 }
 
-// NetworkSpec describes an overlay network for cluster bootstrap.
-// Driver defaults to "overlay" if empty.
+// NetworkSpec.Driver defaults to "overlay" if empty.
 type NetworkSpec struct {
 	Name       string
 	Driver     string
 	Attachable bool
 }
 
-// SecretSpec describes a Docker Swarm secret. Labels are applied so
-// pmcluster-managed secrets can be distinguished from operator-created ones
-// (handy for `cluster down --purge`).
+// SecretSpec.Labels are applied so pmcluster-managed secrets can be
+// distinguished from operator-created ones (cluster down --purge).
 type SecretSpec struct {
 	Name   string
 	Data   []byte
@@ -102,45 +78,38 @@ type SecretSpec struct {
 }
 
 // ConfigSpec is the Docker-config analogue of SecretSpec. Configs are
-// non-sensitive bytes (e.g. rendered YAML) — Swarm distributes them to
-// every node automatically. We use them for the OTel and Traefik dynamic
-// configs that bundled services need at known paths.
+// non-sensitive bytes (rendered YAML); Swarm distributes them to every
+// node automatically.
 type ConfigSpec struct {
 	Name   string
 	Data   []byte
 	Labels map[string]string
 }
 
-// Node is the pmcluster-shaped subset of swarm.Node — one row per swarm
-// member returned by `docker node ls`.
 type Node struct {
 	ID            string
 	Hostname      string
 	Role          string // "manager" | "worker"
 	Availability  string // "active" | "pause" | "drain"
-	Status        string // "ready" | "down" | "unknown" | …
+	Status        string // "ready" | "down" | "unknown"
 	IsLeader      bool
 	EngineVersion string
-	Address       string // node's advertise address ("ip:2377"); blank for non-managers
+	Address       string // "ip:2377"; blank for non-managers
 	CreatedAt     int64  // unix seconds
 	UpdatedAt     int64
 }
 
-// JoinTokens are the worker / manager join tokens currently active in the
-// Swarm. Returned verbatim from the daemon — operators paste them into
-// `docker swarm join` on each new node.
 type JoinTokens struct {
 	Worker  string
 	Manager string
 }
 
-// realClient adapts the upstream `*client.Client` to our Client interface.
 type realClient struct {
 	c *client.Client
 }
 
-// New returns a Client wired to the local Docker daemon (auto-detects
-// /var/run/docker.sock or the DOCKER_HOST env var).
+// New returns a Client wired to the local Docker daemon (DOCKER_HOST or
+// /var/run/docker.sock).
 func New() (Client, error) {
 	c, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
@@ -260,8 +229,7 @@ func (r *realClient) ConfigCreate(ctx context.Context, spec ConfigSpec) error {
 	return nil
 }
 
-// idempotentRemove turns "not found" into nil so teardown loops don't bail
-// on the first missing resource.
+// idempotentRemove maps "not found" to nil so teardown loops don't bail.
 func idempotentRemove(err error, kind, name string) error {
 	if err == nil {
 		return nil
@@ -322,10 +290,8 @@ func (r *realClient) JoinTokens(ctx context.Context) (JoinTokens, error) {
 	}, nil
 }
 
-// isNotFoundString is a fallback "not found" detector for older daemon
-// versions where errdefs.IsNotFound doesn't recognise the error. Belt-and-
-// braces; can be removed when we know the minimum daemon version supports
-// the typed errors.
+// isNotFoundString is a fallback for older daemons whose error doesn't
+// satisfy errdefs.IsNotFound. Belt-and-braces.
 func isNotFoundString(err error) bool {
 	if err == nil {
 		return false
@@ -337,6 +303,4 @@ func isNotFoundString(err error) bool {
 		errors.Is(err, errNotFound)
 }
 
-// errNotFound is unused but reserved — leaves a hook for tests to assert
-// "the wrapper returned NotFound" if we ever expose it.
 var errNotFound = errors.New("not found")

@@ -9,9 +9,8 @@ import (
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/store"
 )
 
-// CredentialKind tags each managed credential with its consumer. The kind
-// drives how the password gets serialised into the Swarm secret (plain vs
-// htpasswd) and which service consumes it.
+// CredentialKind tags a managed credential with its consumer; drives the
+// secret's payload format (plain vs htpasswd).
 type CredentialKind string
 
 const (
@@ -20,48 +19,34 @@ const (
 	KindOpenObserve  CredentialKind = "openobserve"
 )
 
-// ManagedCredential is the in-memory shape of a bootstrap credential after
-// either creation or load-from-store. Password is always plaintext here;
-// callers may forward it to the operator (newly created) or to the renderer
-// (e.g. the OTel basic-auth header).
-//
-// NewlyCreated tracks the pmcluster DB state ("we just inserted this row").
-// SwarmSecretCreated tracks the Swarm state ("we just created this secret").
-// In the normal case they match; they diverge in the "lost DB, kept Swarm"
-// recovery scenario (DB is fresh, Swarm secret already existed) — see the
-// known-issues note in the refactor plan.
+// ManagedCredential is the in-memory shape of a bootstrap credential. The
+// two "Created" flags diverge only in the "lost DB, kept Swarm" recovery
+// scenario (fresh DB but a Swarm secret with that name already existed).
 type ManagedCredential struct {
 	Name               string
 	Kind               CredentialKind
 	Username           string
 	Password           string
 	SwarmSecretName    string
-	NewlyCreated       bool // pmcluster DB row was inserted this run
-	SwarmSecretCreated bool // Swarm secret was created this run
+	NewlyCreated       bool
+	SwarmSecretCreated bool
 }
 
-// BootstrapInput is the operator-supplied data the credential bootstrap
-// needs. Sourced from CLI flags + persisted config.
 type BootstrapInput struct {
-	TraefikAdminUser      string // typically "admin"
-	OpenObserveAdminEmail string // operator's email — becomes OpenObserve admin username
+	TraefikAdminUser      string
+	OpenObserveAdminEmail string
 }
 
-// CredentialsManager bundles the dependencies the bootstrap + rotate flows need.
 type CredentialsManager struct {
 	Store    *store.Store
 	Cipher   *credentials.Cipher
 	Docker   docker.Client
-	Deployer StackDeployer // optional — only required for Rotate's force-restart step
+	Deployer StackDeployer // only required for Rotate's force-restart step
 }
 
 // consumingService maps each managed credential to the swarm service that
-// mounts its secret. Used by Rotate to force-restart the service after
-// the secret has been re-created with new content.
-//
-// Service names are "<stack>_<service>" because that's what `docker stack
-// deploy` produces. Updating one of the bundled stacks should also update
-// this map.
+// mounts its secret. Names are "<stack>_<service>" — what `docker stack
+// deploy` produces. Keep in sync with the bundled stacks.
 var consumingService = map[string]string{
 	"traefik_dashboard": "infra_traefik",
 	"portainer":         "infra_portainer",
@@ -69,17 +54,9 @@ var consumingService = map[string]string{
 }
 
 // Bootstrap ensures every bundled component has a credential. Idempotent:
-// re-running preserves existing values; only missing entries are created.
-//
-// On a fresh install, returns three NewlyCreated=true credentials with their
-// plaintext passwords (operator should print these once and discard). On a
-// re-run, returns the same set with NewlyCreated=false but plaintexts still
-// populated (decrypted from store) so callers can render the OTel config.
-//
-// Specs (Phase 2):
-//   - traefik_dashboard  : Traefik basicAuth admin (htpasswd format → admin_credentials)
-//   - portainer          : Portainer admin password (raw → portainer_admin_password)
-//   - openobserve_admin  : OpenObserve root password (raw → zo_root_user_password)
+// re-runs preserve existing values, only missing entries are created.
+// Returned plaintext passwords are decrypted from the store on re-runs so
+// downstream renderers (e.g. the OTel config's basic-auth header) work.
 func (m *CredentialsManager) Bootstrap(ctx context.Context, in BootstrapInput) (map[string]*ManagedCredential, error) {
 	if in.TraefikAdminUser == "" {
 		in.TraefikAdminUser = "admin"
@@ -88,8 +65,6 @@ func (m *CredentialsManager) Bootstrap(ctx context.Context, in BootstrapInput) (
 		return nil, fmt.Errorf("OpenObserve admin email is required (use --openobserve-email or set in config)")
 	}
 
-	// Take the canonical specs and fill in the per-credential username from
-	// the bootstrap input.
 	usernameFor := map[string]string{
 		"traefik_dashboard": in.TraefikAdminUser,
 		"portainer":         "admin",
@@ -111,16 +86,13 @@ func (m *CredentialsManager) Bootstrap(ctx context.Context, in BootstrapInput) (
 	return out, nil
 }
 
-// secretFormat decides how a credential's plaintext password is serialised
-// into its Swarm secret payload.
 type secretFormat int
 
 const (
 	formatPlain    secretFormat = iota // raw password bytes
-	formatHtpasswd                     // "user:bcrypt(password)\n" line
+	formatHtpasswd                     // "user:bcrypt(password)\n"
 )
 
-// bootstrapSpec is the per-credential recipe consumed by ensure().
 type bootstrapSpec struct {
 	name            string
 	kind            CredentialKind
@@ -129,17 +101,11 @@ type bootstrapSpec struct {
 	format          secretFormat
 }
 
-// ensure implements the get-or-create logic for one credential.
-//
-//  1. Check the store. If found: decrypt password, ensure the matching
-//     Swarm secret exists (re-create if missing), return NewlyCreated=false.
-//  2. If missing: generate a random password, encrypt+insert in store,
-//     create the Swarm secret with the appropriate payload format,
-//     return NewlyCreated=true.
+// ensure is the get-or-create primitive: load from store and reconcile
+// the matching Swarm secret, or mint a fresh password when missing.
 func (m *CredentialsManager) ensure(ctx context.Context, spec bootstrapSpec) (*ManagedCredential, error) {
 	existing, err := m.Store.GetCredential(ctx, spec.name)
 	if err == nil {
-		// Existing credential — decrypt and ensure the Swarm side too.
 		plaintext, err := m.Cipher.Decrypt(existing.PasswordCiphertext)
 		if err != nil {
 			return nil, fmt.Errorf("decrypt %s: %w", spec.name, err)
@@ -166,7 +132,6 @@ func (m *CredentialsManager) ensure(ctx context.Context, spec bootstrapSpec) (*M
 		return nil, fmt.Errorf("lookup %s: %w", spec.name, err)
 	}
 
-	// Brand new credential — generate, persist, mirror to Swarm.
 	password, err := RandomPassword()
 	if err != nil {
 		return nil, fmt.Errorf("generate password: %w", err)
@@ -203,20 +168,14 @@ func (m *CredentialsManager) ensure(ctx context.Context, spec bootstrapSpec) (*M
 	}, nil
 }
 
-// Rotate generates a new random password for an existing managed credential,
-// updates the encrypted store row, removes the old Swarm secret, creates a
-// fresh one with the new value, and force-restarts the consuming service so
-// it re-mounts the new secret.
+// Rotate mints a new password, re-encrypts in store, swaps the Swarm
+// secret, and force-restarts the consuming service. Returns plaintext
+// (caller prints once and discards).
 //
-// Returns the new ManagedCredential with plaintext (callers should print it
-// once and discard).
-//
-// Failure modes:
-//   - Credential not in store → store.ErrCredentialNotFound
-//   - Old Swarm secret cannot be removed (in use by an unknown service) →
-//     wrapped error; the encrypted store has already been updated, but Swarm
-//     still has the old value. Operator can re-run after addressing the
-//     conflict.
+// If SecretRemove fails (typically: the secret is still mounted by a
+// running service), the store has already been updated but Swarm still
+// has the old value. Operator scales the consuming service to 0 and
+// re-runs.
 func (m *CredentialsManager) Rotate(ctx context.Context, name string) (*ManagedCredential, error) {
 	existing, err := m.Store.GetCredential(ctx, name)
 	if err != nil {
@@ -235,8 +194,6 @@ func (m *CredentialsManager) Rotate(ctx context.Context, name string) (*ManagedC
 		return nil, fmt.Errorf("update credential row: %w", err)
 	}
 
-	// Reconstruct the spec so we know how to serialise the new password
-	// (htpasswd vs plain) — same logic the bootstrap path uses.
 	spec, ok := specFor(name, existing)
 	if !ok {
 		return nil, fmt.Errorf("rotate %s: no spec for credential kind %q", name, existing.Kind)
@@ -246,10 +203,8 @@ func (m *CredentialsManager) Rotate(ctx context.Context, name string) (*ManagedC
 		return nil, err
 	}
 
-	// Swarm-side rotation: remove old secret, create new with same name.
-	// Order matters — Docker refuses to remove a secret in use, so this
-	// fails loud if the consuming service is still running. Operator
-	// must scale the service down first or the rotation aborts here.
+	// Order matters: Docker refuses to remove a secret in use, so this
+	// fails loud if the consuming service is still running.
 	if err := m.Docker.SecretRemove(ctx, existing.SwarmSecretName); err != nil {
 		return nil, fmt.Errorf("remove old swarm secret %s (is the consuming service still using it?): %w", existing.SwarmSecretName, err)
 	}
@@ -257,10 +212,8 @@ func (m *CredentialsManager) Rotate(ctx context.Context, name string) (*ManagedC
 		return nil, fmt.Errorf("re-create swarm secret %s: %w", existing.SwarmSecretName, err)
 	}
 
-	// Force-restart the consuming service so its tasks pick up the new
-	// secret on next start. Best-effort: if no service mapping exists, log
-	// and skip — the new secret is in place and will be picked up on the
-	// next deploy.
+	// Best-effort: when no service mapping exists, the secret is still in
+	// place and will be picked up on the next deploy.
 	if svc, ok := consumingService[name]; ok && m.Deployer != nil {
 		if err := m.Deployer.ForceUpdateService(ctx, svc); err != nil {
 			return nil, fmt.Errorf("force-restart %s: %w (new secret IS in place; operator may restart manually)", svc, err)
@@ -278,9 +231,7 @@ func (m *CredentialsManager) Rotate(ctx context.Context, name string) (*ManagedC
 	}, nil
 }
 
-// specFor reconstructs the bootstrapSpec for an existing credential row.
-// Used by Rotate so it knows whether to serialise as plain or htpasswd.
-func specFor(name string, c *store.ManagedCredential) (bootstrapSpec, bool) {
+func specFor(name string, _ *store.ManagedCredential) (bootstrapSpec, bool) {
 	for _, s := range bootstrapSpecs() {
 		if s.name == name {
 			return s, true
@@ -289,9 +240,8 @@ func specFor(name string, c *store.ManagedCredential) (bootstrapSpec, bool) {
 	return bootstrapSpec{}, false
 }
 
-// bootstrapSpecs returns the canonical list of managed credentials.
-// Single source of truth used by both Bootstrap (creates them) and
-// specFor (looks one up by name during rotate).
+// bootstrapSpecs is the canonical list of managed credentials, used by
+// both Bootstrap and Rotate.
 func bootstrapSpecs() []bootstrapSpec {
 	return []bootstrapSpec{
 		{
@@ -315,9 +265,6 @@ func bootstrapSpecs() []bootstrapSpec {
 	}
 }
 
-// serialisePassword shapes the credential payload for its Swarm secret.
-// Plain credentials emit the password bytes; htpasswd credentials emit
-// "user:bcrypt(password)\n".
 func serialisePassword(spec bootstrapSpec, username, password string) ([]byte, error) {
 	switch spec.format {
 	case formatPlain:

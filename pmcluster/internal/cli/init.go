@@ -53,9 +53,8 @@ func runInit(cmd *cobra.Command, _ []string) error {
 	}
 	defer func() { _ = st.Close() }()
 
-	// Defensive: even after prepareDataDir, refuse to silently overwrite a
-	// pre-existing user (could happen if the DB file was untouched but contains
-	// data from a manual setup we don't know about).
+	// Defensive: refuse to overwrite if the DB has any users (e.g.
+	// migration left a row behind).
 	count, err := st.CountUsers(cmd.Context())
 	if err != nil {
 		return fmt.Errorf("count users: %w", err)
@@ -77,8 +76,8 @@ func runInit(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// prepareDataDir creates the data directory (mode 0700). With --force, any
-// existing DB file is removed first; otherwise an existing DB is an error.
+// prepareDataDir creates the data directory (mode 0700). With --force,
+// the DB and its WAL/SHM sidecars are removed first.
 func prepareDataDir(dataDir, dbPath string, force bool) error {
 	if err := os.MkdirAll(dataDir, 0o700); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
@@ -87,8 +86,6 @@ func prepareDataDir(dataDir, dbPath string, force bool) error {
 		if !force {
 			return fmt.Errorf("%s already exists; use --force to overwrite", dbPath)
 		}
-		// WAL/SHM sidecar files exist while DB is open; remove them too so
-		// we don't accidentally inherit half-deleted state.
 		for _, p := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
 			if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 				return fmt.Errorf("remove %s: %w", p, err)
@@ -100,8 +97,8 @@ func prepareDataDir(dataDir, dbPath string, force bool) error {
 	return nil
 }
 
-// createUser generates a token, hashes it, inserts the user row, and returns
-// the plaintext token (caller must show it to the operator and discard).
+// createUser returns the plaintext token; caller shows it once and
+// discards.
 func createUser(ctx context.Context, st *store.Store, name string) (string, error) {
 	token, err := auth.GenerateToken()
 	if err != nil {
@@ -117,8 +114,7 @@ func createUser(ctx context.Context, st *store.Store, name string) (string, erro
 	return token, nil
 }
 
-// writeDefaultConfig drops a minimal config.yaml in DataDir if one is missing.
-// Idempotent — never overwrites an existing file (the operator's edits win).
+// writeDefaultConfig is idempotent — operator edits win.
 func writeDefaultConfig(cfg *config.Config) error {
 	path := cfg.ConfigPath()
 	if _, err := os.Stat(path); err == nil {
@@ -135,9 +131,6 @@ log_level: "%s"
 	return os.WriteFile(path, []byte(body), 0o600)
 }
 
-// printBootstrapToken renders the one-time bootstrap message to stdout.
-// Format is human-grep-friendly and includes both the curl example and the
-// "next step" pointer.
 func printBootstrapToken(w io.Writer, cfg *config.Config, name, token string) {
 	fmt.Fprintf(w, `
 ✅ pmcluster initialised.

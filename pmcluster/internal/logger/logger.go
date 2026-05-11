@@ -1,17 +1,10 @@
-// Package logger wires zerolog into pmcluster with two outputs:
+// Package logger wires zerolog with two outputs: a colorized console
+// writer for interactive use, and a JSON file writer at
+// <data_dir>/logs/pmcluster-YYYY-MM-DD.log for audit. Files rotate per
+// UTC day and are swept after RetentionDays.
 //
-//   - a colorized console writer (human-friendly) on stderr
-//   - a JSON file writer at <data_dir>/logs/pmcluster-YYYY-MM-DD.log
-//
-// The file writer is the audit trail; the console writer is what the
-// operator sees when they run `pmcluster cluster up` or attach to
-// `pmcluster serve` interactively. CLI commands that produce primary
-// user-visible output (passwords, tokens, tables) keep using fmt.Fprint
-// to stdout — this logger is for status/progress/error lines, not
-// the headline content the operator came for.
-//
-// Files are rotated by date (one per UTC day) and swept on serve startup
-// (see Sweep) to drop anything older than 14 days.
+// CLI commands print headline content (passwords, tables) directly via
+// fmt.Fprint; the logger is for status, progress, and error lines.
 package logger
 
 import (
@@ -26,36 +19,29 @@ import (
 	"github.com/rs/zerolog"
 )
 
-// RetentionDays is how long pmcluster keeps log files before sweeping.
-// 14 days is enough to investigate a multi-day incident; longer than that
-// and the operator should be shipping logs to OpenObserve anyway.
+// RetentionDays bounds how long log files live; longer-term retention
+// belongs in OpenObserve.
 const RetentionDays = 14
 
-// Options configures a logger. All fields are optional.
+// Options has all-optional fields.
 type Options struct {
-	// LogsDir is the directory holding pmcluster-YYYY-MM-DD.log files.
-	// If empty, file logging is disabled.
+	// LogsDir holds pmcluster-YYYY-MM-DD.log files. Empty disables file logging.
 	LogsDir string
 
-	// Level is "debug" / "info" / "warn" / "error". Default "info".
+	// Level: "debug" | "info" | "warn" | "error". Default "info".
 	Level string
 
-	// Console controls whether to also emit human-readable lines.
-	// True for interactive commands (cluster up, serve), false for unit tests.
+	// Console enables a colorized writer alongside the file sink.
 	Console bool
 
-	// ConsoleOut is the writer for the console output. Defaults to os.Stdout
-	// (so `pmcluster serve` log lines land in stdout, the same place an
-	// operator's tail/grep is pointed at; tests can override).
+	// ConsoleOut overrides the default os.Stdout for tests.
 	ConsoleOut io.Writer
 
-	// Now is a clock injection seam — defaults to time.Now.
+	// Now is a clock seam; defaults to time.Now.
 	Now func() time.Time
 }
 
-// dailyFileWriter is an io.Writer that re-opens its file when the UTC date
-// rolls over. Cheap: each Write checks the date and only swaps when the day
-// changes, so steady-state has one fstat-equivalent per write.
+// dailyFileWriter re-opens its file when the UTC date rolls over.
 type dailyFileWriter struct {
 	dir string
 	now func() time.Time
@@ -105,8 +91,7 @@ func (w *dailyFileWriter) Write(p []byte) (int, error) {
 	return w.f.Write(p)
 }
 
-// Close releases the underlying file handle. Safe to call from a
-// signal-driven shutdown; further Writes will reopen lazily.
+// Close is safe to call mid-flight; further Writes reopen lazily.
 func (w *dailyFileWriter) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -118,8 +103,8 @@ func (w *dailyFileWriter) Close() error {
 	return err
 }
 
-// New constructs a zerolog.Logger from Options. Returns the logger plus a
-// closer the caller should defer (no-op when file logging is disabled).
+// New returns the logger plus a closer the caller should defer (no-op
+// when file logging is disabled).
 func New(opts Options) (zerolog.Logger, io.Closer, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -136,8 +121,7 @@ func New(opts Options) (zerolog.Logger, io.Closer, error) {
 		if out == nil {
 			out = os.Stdout
 		}
-		// ConsoleWriter formats lines like:
-		//   2026-05-10T22:14:08+02:00 INF preflight passed
+		// Format: "2026-05-10T22:14:08+02:00 INF preflight passed"
 		console := zerolog.ConsoleWriter{
 			Out:        out,
 			TimeFormat: time.RFC3339,
@@ -155,8 +139,6 @@ func New(opts Options) (zerolog.Logger, io.Closer, error) {
 	}
 
 	if len(writers) == 0 {
-		// Pure tests / nothing requested — return a Nop so callers don't
-		// have to nil-check the logger.
 		return zerolog.Nop(), noopCloser{}, nil
 	}
 
@@ -165,13 +147,9 @@ func New(opts Options) (zerolog.Logger, io.Closer, error) {
 	return logger, closer, nil
 }
 
-// Sweep deletes log files in dir older than RetentionDays. Best-effort:
-// individual unlink failures are returned as a single joined error, but
-// processing continues so one bad file doesn't block the rest.
-//
-// Called from serve startup; safe to call concurrently with active logging
-// (the dailyFileWriter holds an open fd to today's file, which Linux/macOS
-// keep usable even after unlink).
+// Sweep deletes log files older than RetentionDays. Safe to call
+// concurrently with active logging — Linux/macOS keep an open fd usable
+// after unlink.
 func Sweep(dir string, now time.Time) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -180,8 +158,8 @@ func Sweep(dir string, now time.Time) error {
 		}
 		return fmt.Errorf("sweep: read %s: %w", dir, err)
 	}
-	// Truncate to midnight UTC so a file dated exactly RetentionDays ago
-	// is kept (we're comparing date stamps, not wall clocks).
+	// Cutoff at midnight UTC so a file dated exactly RetentionDays ago
+	// is kept — we're comparing date stamps, not wall clocks.
 	cutoff := time.Date(now.UTC().Year(), now.UTC().Month(), now.UTC().Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -RetentionDays)
 	var problems []string
 	for _, e := range entries {

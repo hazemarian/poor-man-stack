@@ -61,10 +61,13 @@ jobs:
           cache-dependency-path: pmcluster/go.sum
 
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
-          # v2.x matches the schema in pmcluster/.golangci.yml.
-          version: latest
+          # Must be a v2.x release built with Go ≥ 1.25 — older binaries
+          # refuse to read a `go 1.25` module. The action's `latest` on
+          # @v6 resolved to v1.64.8 (Go 1.24) and failed; @v8 + a pinned
+          # v2.x avoids that.
+          version: v2.12.2
           working-directory: pmcluster
           args: --timeout=5m
 

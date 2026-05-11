@@ -14,14 +14,10 @@ import (
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/store"
 )
 
-// replayRegistryLogins re-runs `docker login` for every persisted registry
-// credential. We do this on serve startup so a fresh manager (where SQLite
-// survived but ~/.docker/config.json was wiped) keeps pulling private images
-// via `--with-registry-auth`.
-//
-// Best-effort: a single failing login (e.g. expired GitHub PAT) is logged
-// but does not block the daemon — pmcluster's REST/webhook surface still
-// works, and operators can rotate the credential via `pmcluster registry add`.
+// replayRegistryLogins re-runs docker login for every persisted registry
+// so a manager rebuild (SQLite survived, ~/.docker/config.json gone)
+// keeps pulling private images. Best-effort: failures are logged, never
+// block the daemon.
 func replayRegistryLogins(ctx context.Context, st *store.Store, cfg *config.Config, log zerolog.Logger) error {
 	regs, err := st.ListRegistries(ctx)
 	if err != nil {

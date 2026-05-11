@@ -16,7 +16,6 @@ import (
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/store"
 )
 
-// clusterCmd is the parent command for cluster lifecycle operations.
 var clusterCmd = &cobra.Command{
 	Use:   "cluster",
 	Short: "Manage the cluster lifecycle (bootstrap, status, teardown)",
@@ -25,8 +24,7 @@ var clusterCmd = &cobra.Command{
 var clusterUpCmd = &cobra.Command{
 	Use:   "up",
 	Short: "Bring the cluster up: preflight, secrets, networks, configs, stacks",
-	Long: `Replaces the legacy bin/setup.sh. On a manager with Docker installed
-and Swarm initialised:
+	Long: `On a manager with Docker installed and Swarm initialised:
 
   - Preflight (Docker reachable, Swarm active, this node is a manager)
   - Ensure overlay networks (traefik-net, monitoring-net)
@@ -36,8 +34,7 @@ and Swarm initialised:
   - Render OTel + Traefik dynamic configs in-process; ship as Docker configs
   - Deploy infra/observability/backup stacks via 'docker stack deploy'
 
-Idempotent: re-running reconciles, never destroys existing state. Use
-'pmcluster cluster down' to tear down.`,
+Idempotent: re-running reconciles, never destroys existing state.`,
 	RunE: runClusterUp,
 }
 
@@ -65,10 +62,12 @@ func runClusterUp(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("data directory not initialised at %s — run `pmcluster init` first", cfg.DataDir)
 	}
 
+	// Console=false: cluster up uses fmt.Fprint for human progress; logger
+	// only writes to the audit file here.
 	log, logCloser, err := logger.New(logger.Options{
 		LogsDir: cfg.LogsDir(),
 		Level:   cfg.LogLevel,
-		Console: false, // cluster up uses fmt.Fprint for human progress; logger is for the audit file
+		Console: false,
 	})
 	if err != nil {
 		return fmt.Errorf("init logger: %w", err)
@@ -119,9 +118,6 @@ func runClusterUp(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// printUpResult renders the post-Up summary, including newly created
-// bootstrap credentials. Existing creds are listed by name only — operators
-// can retrieve them via `pmcluster credentials show <name>` (Phase 2.2).
 func printUpResult(out io.Writer, in cluster.UpInput, res *cluster.UpResult) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "🎉 pmcluster cluster up complete.")
@@ -138,17 +134,11 @@ func printUpResult(out io.Writer, in cluster.UpInput, res *cluster.UpResult) {
 	fmt.Fprintf(out, "  Stacks deployed  : %v\n", res.StacksDeployed)
 	fmt.Fprintln(out)
 
-	// Show every managed credential's password — newly minted or pre-existing.
-	// Operators wanted "after I run cluster up I can see what I need to log
-	// into things"; making them re-run a separate `credentials show` per
-	// service is friction. The values are already on screen during install,
-	// so this is no worse than scrollback.
 	if len(res.BootstrapCredentials) > 0 {
 		fmt.Fprintln(out, "════════════════════════════════════════════════════════════════════")
 		fmt.Fprintln(out, "🔑 BOOTSTRAP CREDENTIALS — save these somewhere safe")
 		fmt.Fprintln(out, "════════════════════════════════════════════════════════════════════")
 		fmt.Fprintln(out)
-		// Stable order so output is reproducible across runs.
 		order := []string{"traefik_dashboard", "portainer", "openobserve_admin"}
 		for _, name := range order {
 			c := res.BootstrapCredentials[name]

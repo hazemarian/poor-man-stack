@@ -8,15 +8,12 @@ import (
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/docker"
 )
 
-// DownInput drives `pmcluster cluster down`.
 type DownInput struct {
-	// Purge also removes pmcluster-managed Swarm secrets, configs, and the
-	// two overlay networks. SQLite state is NOT removed by purge — that's
-	// the operator's call (deleting ~/.pmcluster wipes everything).
+	// Purge removes pmcluster-managed secrets, configs, and the two
+	// overlay networks. SQLite state is never touched.
 	Purge bool
 }
 
-// DownResult summarises everything Down did.
 type DownResult struct {
 	StacksRemoved   []string
 	SecretsRemoved  []string
@@ -24,17 +21,15 @@ type DownResult struct {
 	NetworksRemoved []string
 }
 
-// DownDeps mirrors UpDeps but with only the bits Down needs.
 type DownDeps struct {
 	Docker   docker.Client
 	Deployer StackDeployer
 	Stdout   io.Writer
 }
 
-// pmclusterManagedSecrets is the canonical list of Swarm secrets pmcluster
-// owns and is allowed to remove on --purge. Listed explicitly (rather than
-// "anything with the pmcluster label") so we don't accidentally nuke an
-// operator-created secret that happened to be labelled.
+// pmclusterManagedSecrets is enumerated explicitly (not "anything with
+// the pmcluster label") so a mislabelled operator secret can't be
+// accidentally purged.
 var pmclusterManagedSecrets = []string{
 	"admin_credentials",
 	"portainer_admin_password",
@@ -53,8 +48,7 @@ var pmclusterManagedNetworks = []string{
 	"monitoring-net",
 }
 
-// Down tears down the bundled stacks. With Purge, also removes secrets,
-// configs, and overlay networks. Idempotent: missing resources are no-ops.
+// Down is idempotent — missing resources are no-ops.
 func Down(ctx context.Context, deps DownDeps, in DownInput) (*DownResult, error) {
 	out := io.Discard
 	if deps.Stdout != nil {
@@ -63,8 +57,8 @@ func Down(ctx context.Context, deps DownDeps, in DownInput) (*DownResult, error)
 	res := &DownResult{}
 	step := func(label string) { fmt.Fprintf(out, "▶ %s\n", label) }
 
-	// Stacks first; secrets/configs/networks are referenced by them, removing
-	// them while services still reference would error.
+	// Stacks first — removing referenced secrets/configs/networks while
+	// services still hold them would error.
 	step("Removing stacks (infra, observability, backup)")
 	for _, s := range []string{"infra", "observability", "backup"} {
 		if err := deps.Deployer.RemoveStack(ctx, s); err != nil {
@@ -79,8 +73,8 @@ func Down(ctx context.Context, deps DownDeps, in DownInput) (*DownResult, error)
 		return res, nil
 	}
 
-	// Pause briefly to let Swarm release references; otherwise removing
-	// secrets/configs may race against still-terminating tasks.
+	// Let Swarm release references; otherwise secret/config removal races
+	// against still-terminating tasks.
 	fmt.Fprintln(out, "  Waiting briefly for stack teardown to settle…")
 	waitTeardownSettle(ctx)
 
@@ -115,8 +109,6 @@ func Down(ctx context.Context, deps DownDeps, in DownInput) (*DownResult, error)
 	return res, nil
 }
 
-// waitTeardownSettle gives Swarm a few seconds to drop references before
-// we try to remove the resources stacks were holding.
 func waitTeardownSettle(ctx context.Context) {
 	const settleSeconds = 5
 	timer := newTimer(settleSeconds)

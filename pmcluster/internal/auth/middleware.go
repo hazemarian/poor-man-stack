@@ -7,39 +7,30 @@ import (
 )
 
 // User is the authenticated principal attached to the request context by
-// Bearer middleware. Kept minimal — Phase 1 only needs name to power
-// /api/me; richer authz lives in later phases.
+// Bearer middleware.
 type User struct {
 	ID   int64
 	Name string
 }
 
-// ctxKey is unexported to prevent context-key collisions across packages.
 type ctxKey struct{}
 
-// FromContext retrieves the authenticated user, if any. Handlers behind
-// Bearer middleware can rely on it being non-nil; handlers reachable
-// without auth must check.
+// FromContext returns the authenticated user, or nil if none is attached.
 func FromContext(ctx context.Context) *User {
 	u, _ := ctx.Value(ctxKey{}).(*User)
 	return u
 }
 
-// Lookup is the contract Bearer needs from a user store: given a plaintext
-// token, return the matching user (or nil, nil if no match).
-//
-// Implementations MUST iterate users and call VerifyToken — there's no way
-// to look up by token directly because we only store hashes (and argon2id
-// salts are per-row). For the small user counts pmcluster expects (single
-// digits) this is fine; Phase 4+ may add a lookup index keyed by the first
-// few token bytes if it ever becomes a hot path.
+// Lookup is the contract Bearer needs from a user store. Implementations
+// iterate users and call VerifyToken; argon2id salts are per-row so we
+// can't look up by token directly.
 type Lookup interface {
 	UserByToken(ctx context.Context, token string) (*User, error)
 }
 
-// Bearer returns middleware that requires `Authorization: Bearer <token>`
-// and looks the token up via lookup. Missing/malformed headers and unknown
-// tokens both return 401 with no body to avoid leaking which case it was.
+// Bearer requires `Authorization: Bearer <token>` and looks it up via
+// lookup. Every failure mode returns the same 401 to avoid leaking which
+// case it was.
 func Bearer(lookup Lookup) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -61,9 +52,8 @@ func Bearer(lookup Lookup) func(http.Handler) http.Handler {
 	}
 }
 
-// extractBearer parses an "Authorization: Bearer <token>" header. Tolerant
-// of trailing whitespace; case-insensitive on the scheme; rejects empty
-// tokens and other schemes (Basic, etc.).
+// extractBearer parses "Authorization: Bearer <token>" — case-insensitive
+// scheme, tolerant of trailing whitespace, rejects empty/other schemes.
 func extractBearer(header string) (string, bool) {
 	header = strings.TrimSpace(header)
 	if header == "" {

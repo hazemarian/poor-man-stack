@@ -19,10 +19,9 @@ import (
 var credsCmd = &cobra.Command{
 	Use:   "credentials",
 	Short: "Inspect bootstrap credentials managed by pmcluster",
-	Long: `pmcluster generates random passwords for the bundled components
-(Traefik dashboard, Portainer, OpenObserve) on first 'cluster up' and
-stores them encrypted in SQLite. These commands let you retrieve them
-later — they're shown only once during 'cluster up' otherwise.`,
+	Long: `pmcluster generates random passwords for the bundled components on
+first 'cluster up' and stores them encrypted in SQLite. These commands
+retrieve them after the fact.`,
 }
 
 var credsListCmd = &cobra.Command{
@@ -34,9 +33,8 @@ var credsListCmd = &cobra.Command{
 var credsShowCmd = &cobra.Command{
 	Use:   "show <name>",
 	Short: "Decrypt and print one credential's username + password",
-	Long: `Prints the credential's username and plaintext password to stdout.
-The password is decrypted using ~/.pmcluster/.encryption_key. Treat the
-output as sensitive.
+	Long: `Decrypts via ~/.pmcluster/.encryption_key and prints to stdout. Treat
+the output as sensitive.
 
 Names: traefik_dashboard | portainer | openobserve_admin`,
 	Args: cobra.ExactArgs(1),
@@ -46,18 +44,12 @@ Names: traefik_dashboard | portainer | openobserve_admin`,
 var credsRotateCmd = &cobra.Command{
 	Use:   "rotate <name>",
 	Short: "Generate a new password, swap the Swarm secret, restart the consuming service",
-	Long: `Rotates a managed credential end-to-end:
+	Long: `Rotates a managed credential end-to-end (generate → re-encrypt →
+SecretRemove → SecretCreate → ForceUpdateService).
 
-  1. Generate a fresh random password.
-  2. Re-encrypt and update ~/.pmcluster/data.db.
-  3. Remove the old Swarm secret.
-  4. Re-create it with the new value (same name, so the consuming service's
-     mount path doesn't change).
-  5. Force-restart the consuming service so its tasks re-mount the secret.
-
-Limitation: step 3 fails if the service is currently running tasks that
-have the secret mounted. If you see "secret in use", scale the service to 0
-first (docker service scale <name>=0), rotate, then scale back.
+If the consuming service is still running with the secret mounted,
+SecretRemove fails ("secret in use"). Scale the service to 0
+(docker service scale <name>=0), rotate, then scale back.
 
 Names: traefik_dashboard | portainer | openobserve_admin`,
 	Args: cobra.ExactArgs(1),
@@ -176,9 +168,8 @@ func runCredsRotate(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// openStore is a small helper shared by credentials commands: load config,
-// refuse if data dir not initialised, open store. Returns config too because
-// callers need EncryptionKeyPath().
+// openStore loads config, refuses if the data dir isn't initialised, and
+// opens the store. Returns config too — callers need EncryptionKeyPath().
 func openStore() (*store.Store, *config.Config, error) {
 	cfg, err := config.Load(configPath)
 	if err != nil {

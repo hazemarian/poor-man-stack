@@ -9,26 +9,16 @@ import (
 	"github.com/hazemarian/poor-man-stack/pmcluster/pkg/dsl"
 )
 
-// envVarRe matches ${env:VARIABLE_NAME} — letter or underscore start,
-// letters/digits/underscores body. The escape with $$ for a literal $
-// is intentionally NOT supported; the DSL doesn't have shell-style needs.
 var envVarRe = regexp.MustCompile(`\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}`)
 
-// Interpolate substitutes built-in placeholders and ${env:VAR} references
-// throughout the manifest. Walks every string-valued field in the App and
-// every Service. Returns the same *App (mutated in place) for chainability.
-//
-// Built-in placeholders:
+// Interpolate mutates app in place. Placeholders:
 //
 //	${app}       → app.Name
 //	${env}       → app.Env
-//	${version}   → app.Version  (defaults to "latest" if empty)
-//	${registry}  → app.Registry (empty if unset)
+//	${version}   → app.Version  (defaults to "latest")
+//	${registry}  → app.Registry
 //	${domain}    → app.Domain
-//	${env:VAR}   → os.Getenv("VAR") — fails if VAR is unset
-//
-// Any unresolved ${env:VAR} returns a structured error so the operator
-// sees exactly which variable was missing.
+//	${env:VAR}   → os.Getenv("VAR") — error if unset
 func Interpolate(app *dsl.App) error {
 	if app.Version == "" {
 		app.Version = "latest"
@@ -42,7 +32,6 @@ func Interpolate(app *dsl.App) error {
 	}
 	subst := func(s string) (string, error) { return substitute(s, builtins) }
 
-	// App-level scalar fields.
 	for _, p := range []*string{&app.Domain, &app.Registry, &app.Version, &app.RepoURL, &app.EnvFile} {
 		v, err := subst(*p)
 		if err != nil {
@@ -65,7 +54,6 @@ func Interpolate(app *dsl.App) error {
 		app.Volumes[i] = v
 	}
 
-	// Service-level fields.
 	for name, svc := range app.Services {
 		if err := interpolateService(name, svc, subst); err != nil {
 			return err
@@ -126,16 +114,12 @@ func interpolateService(name string, s *dsl.Service, subst func(string) (string,
 	return nil
 }
 
-// substitute performs both built-in and ${env:VAR} substitution. Built-ins
-// are replaced first (literal string replace); then ${env:VAR} is matched
-// via regex and looked up in the process env.
 func substitute(s string, builtins map[string]string) (string, error) {
 	for placeholder, value := range builtins {
 		s = strings.ReplaceAll(s, placeholder, value)
 	}
 	var unresolved []string
 	out := envVarRe.ReplaceAllStringFunc(s, func(match string) string {
-		// match is the whole "${env:VAR}"; strip "${env:" and "}".
 		varName := match[len("${env:") : len(match)-1]
 		v, ok := os.LookupEnv(varName)
 		if !ok {

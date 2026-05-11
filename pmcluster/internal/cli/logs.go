@@ -23,12 +23,8 @@ import (
 var logsCmd = &cobra.Command{
 	Use:   "logs",
 	Short: "Print recent JSON logs written by `pmcluster serve` and CLI commands",
-	Long: `pmcluster writes JSON-line logs to ~/.pmcluster/logs/pmcluster-YYYY-MM-DD.log.
-Files are rotated daily and swept after 14 days. This command tails the
-most recent file by default; pass --since=24h or --tail=N to narrow
-the output.
-
-The output is the raw JSON from disk so you can pipe it into jq:
+	Long: `Reads ~/.pmcluster/logs/pmcluster-YYYY-MM-DD.log. Output is raw JSON
+so it pipes into jq:
   pmcluster logs --tail=200 | jq 'select(.level=="error")'`,
 	RunE: runLogs,
 }
@@ -62,7 +58,6 @@ func runLogs(cmd *cobra.Command, _ []string) error {
 		return nil
 	}
 	if !allFiles {
-		// Most-recent file only. Sorted ascending by date, so last entry.
 		files = files[len(files)-1:]
 	}
 
@@ -90,9 +85,6 @@ func runLogs(cmd *cobra.Command, _ []string) error {
 	}
 
 	if follow {
-		// Tail the latest file, sending new lines to stdout. Re-evaluate
-		// the latest file every second so we naturally cross the midnight
-		// rotation boundary.
 		ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
 		defer stop()
 		return followLogs(ctx, cfg.LogsDir(), out)
@@ -100,7 +92,7 @@ func runLogs(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// dailyLogFiles returns log files in dir sorted ascending by date.
+// dailyLogFiles returns logs sorted ascending by date.
 func dailyLogFiles(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -119,12 +111,11 @@ func dailyLogFiles(dir string) ([]string, error) {
 			files = append(files, filepath.Join(dir, name))
 		}
 	}
-	sort.Strings(files) // alphabetical sort = chronological for YYYY-MM-DD
+	sort.Strings(files) // YYYY-MM-DD sorts chronologically as ASCII
 	return files, nil
 }
 
-// readLogLines reads JSON-line entries from path. If sinceCutoff is non-zero,
-// only entries with time >= sinceCutoff are returned.
+// readLogLines filters to entries newer than sinceCutoff (zero = no filter).
 func readLogLines(path string, sinceCutoff time.Time) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -150,9 +141,8 @@ func readLogLines(path string, sinceCutoff time.Time) ([]string, error) {
 	return out, nil
 }
 
-// lineNewerThan returns true if the entry's "time" field parses to a value
-// >= cutoff. Malformed entries are kept (we'd rather show too much than
-// silently drop) and entries without a time field are kept.
+// lineNewerThan keeps malformed/no-timestamp lines on the side of
+// over-showing rather than silently dropping.
 func lineNewerThan(line string, cutoff time.Time) bool {
 	var entry map[string]any
 	if err := json.Unmarshal([]byte(line), &entry); err != nil {
@@ -173,8 +163,8 @@ func lineNewerThan(line string, cutoff time.Time) bool {
 	return !t.Before(cutoff)
 }
 
-// followLogs tails the latest log file. Re-evaluates which file is "latest"
-// once a second so a midnight rotation is picked up automatically.
+// followLogs re-evaluates the latest file every tick so midnight rotation
+// is picked up automatically.
 func followLogs(ctx context.Context, dir string, out io.Writer) error {
 	var (
 		currentPath string
@@ -212,7 +202,7 @@ func followLogs(ctx context.Context, dir string, out io.Writer) error {
 			if err != nil {
 				return fmt.Errorf("open %s: %w", latest, err)
 			}
-			// Seek to end so we only print *new* lines.
+			// Seek to end so we only emit lines added after this point.
 			if _, err := nf.Seek(0, io.SeekEnd); err != nil {
 				_ = nf.Close()
 				return fmt.Errorf("seek %s: %w", latest, err)
@@ -221,7 +211,6 @@ func followLogs(ctx context.Context, dir string, out io.Writer) error {
 			currentPath = latest
 		}
 
-		// Drain any new bytes.
 		buf := make([]byte, 16*1024)
 		for {
 			n, err := f.Read(buf)

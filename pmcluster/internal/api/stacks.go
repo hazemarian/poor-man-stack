@@ -13,22 +13,19 @@ import (
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/store"
 )
 
-// StacksHandler exposes the stack-management routes:
+// StacksHandler routes:
 //
-//	POST   /api/stacks                              — deploy a new revision
-//	GET    /api/stacks                              — list all stacks
-//	GET    /api/stacks/{name}                       — current state + recent revisions
-//	GET    /api/stacks/{name}/revisions/{rev}       — full source + rendered YAML for one revision
-//	POST   /api/stacks/{name}/rollback              — body {revision: N} → re-apply revision N
-//
-// The handlers themselves are thin: parse → call deploy.Service → render JSON.
+//	POST /api/stacks                              — deploy a new revision
+//	GET  /api/stacks                              — list
+//	GET  /api/stacks/{name}                       — metadata + recent revisions
+//	GET  /api/stacks/{name}/revisions/{rev}       — full source + rendered YAML
+//	POST /api/stacks/{name}/rollback              — body {revision: N}
 type StacksHandler struct {
 	Store   *store.Store
 	Service *deploy.Service
 }
 
-// Mount registers all stack routes onto r. Caller is responsible for
-// wrapping with auth middleware (Bearer) in the parent router.
+// Mount expects to be wrapped with Bearer auth in the parent router.
 func (h *StacksHandler) Mount(r chi.Router) {
 	r.Post("/stacks", h.deploy)
 	r.Get("/stacks", h.list)
@@ -37,7 +34,6 @@ func (h *StacksHandler) Mount(r chi.Router) {
 	r.Post("/stacks/{name}/rollback", h.rollback)
 }
 
-// deploy handles POST /api/stacks. Request body: deploy.Payload as JSON.
 func (h *StacksHandler) deploy(w http.ResponseWriter, r *http.Request) {
 	var p deploy.Payload
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&p); err != nil {
@@ -55,7 +51,6 @@ func (h *StacksHandler) deploy(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// list handles GET /api/stacks.
 func (h *StacksHandler) list(w http.ResponseWriter, r *http.Request) {
 	stacks, err := h.Store.ListStacks(r.Context())
 	if err != nil {
@@ -69,7 +64,7 @@ func (h *StacksHandler) list(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"stacks": out})
 }
 
-// show handles GET /api/stacks/{name}: stack metadata + the 20 most recent revisions.
+// show returns metadata + the 20 most recent revisions.
 func (h *StacksHandler) show(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	st, err := h.Store.GetStack(r.Context(), name)
@@ -88,8 +83,8 @@ func (h *StacksHandler) show(w http.ResponseWriter, r *http.Request) {
 	}
 	revsJSON := make([]map[string]any, 0, len(revs))
 	for _, rv := range revs {
-		// Don't include source/rendered YAML in the list view — too heavy.
-		// Operators use the revisions/{rev} endpoint to fetch one.
+		// Listing skips source/rendered YAML; clients fetch one via
+		// revisions/{rev} when they need the body.
 		revsJSON = append(revsJSON, map[string]any{
 			"revision":   rv.Revision,
 			"created_at": rv.CreatedAt,
@@ -101,8 +96,7 @@ func (h *StacksHandler) show(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// showRevision handles GET /api/stacks/{name}/revisions/{rev}.
-// Returns the full source + rendered YAML for one revision.
+// showRevision returns the full source + rendered YAML for one revision.
 func (h *StacksHandler) showRevision(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	rev, err := strconv.ParseInt(chi.URLParam(r, "rev"), 10, 64)
@@ -129,7 +123,6 @@ func (h *StacksHandler) showRevision(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// rollback handles POST /api/stacks/{name}/rollback with body {revision: N}.
 func (h *StacksHandler) rollback(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	var body struct {
@@ -159,8 +152,7 @@ func (h *StacksHandler) rollback(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// stackJSON is the canonical JSON shape for a Stack across endpoints.
-// Centralised here so all routes return identically-shaped objects.
+// stackJSON keeps the Stack response shape identical across endpoints.
 func stackJSON(s *store.Stack) map[string]any {
 	repo := ""
 	if s.RepoURL.Valid {

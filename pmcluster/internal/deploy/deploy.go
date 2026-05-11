@@ -1,15 +1,8 @@
-// Package deploy is the shared engine behind every "deploy a stack" path:
-// the REST API (POST /api/stacks), the webhook receiver (POST /webhook/...),
-// and the CLI (`pmcluster deploy <file>`). They all build the same Payload
-// and call Service.Deploy.
+// Package deploy is the shared engine behind the REST, webhook, and CLI
+// deploy paths. Pipeline:
 //
-// The pipeline:
-//
-//	Payload → Parse → (override version) → Interpolate → Validate → Translate
-//	                → RecordDeploy (SQLite) → DeployStack (docker stack deploy)
-//
-// Returns the assigned revision id (unix timestamp) and the rendered YAML
-// so callers can show / log / audit it.
+//	Payload → Parse → (override version) → Interpolate → Validate
+//	        → Translate → RecordDeploy → DeployStack
 package deploy
 
 import (
@@ -25,57 +18,35 @@ import (
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/store"
 )
 
-// BackupTrigger runs an on-demand backup. Implemented by internal/backup;
-// abstracted here so tests can stub it without spinning up offen.
+// BackupTrigger is implemented by internal/backup; abstracted so tests
+// can stub it without spinning up offen.
 type BackupTrigger interface {
 	Trigger(ctx context.Context) (archivePaths []string, err error)
 }
 
-// Payload is the canonical shape of a deploy request. The webhook receiver
-// and the REST API both decode JSON into this struct; the CLI builds it
-// from --flags + a YAML file.
+// Payload is the canonical deploy request. JSON shape is shared by the
+// REST handler and the webhook receiver.
 type Payload struct {
-	// AppName overrides the manifest's `app:` field. Optional. Lets the same
-	// manifest deploy under different stack names (multi-tenant scenarios).
-	AppName string `json:"app_name,omitempty"`
-
-	// RepoURL is metadata only — pmcluster never fetches from git. Stored
-	// on the stack row for UI/audit.
-	RepoURL string `json:"repo_url,omitempty"`
-
-	// Version overrides the manifest's `version:` field (typically the
-	// container image tag). Optional.
-	Version string `json:"version,omitempty"`
-
-	// Manifest is the YAML body of the DSL document. Required.
+	AppName  string `json:"app_name,omitempty"` // overrides manifest's `app:`
+	RepoURL  string `json:"repo_url,omitempty"` // metadata only, never fetched
+	Version  string `json:"version,omitempty"`  // overrides manifest's `version:`
 	Manifest string `json:"manifest"`
 }
 
-// DeployResult is what Deploy returns on success. Used by API/CLI to
-// render confirmation to the operator.
 type DeployResult struct {
 	StackName    string
 	Revision     int64
 	RenderedYAML []byte
 }
 
-// Service bundles the dependencies the deploy pipeline needs. Constructed
-// once per HTTP request OR once per CLI invocation.
+// Service bundles deploy-pipeline dependencies. Backup is optional;
+// manifests with backup_before_deploy still proceed when nil.
 type Service struct {
 	Store    *store.Store
 	Deployer cluster.StackDeployer
-
-	// Backup is optional. When nil, manifests with backup_before_deploy: true
-	// log a warning instead of failing — the deploy still proceeds. Wired
-	// from the CLI/serve to internal/backup.
-	Backup BackupTrigger
+	Backup   BackupTrigger
 }
 
-// Deploy runs the full pipeline for a brand-new revision. Called by both
-// the API handler and the CLI deploy command.
-//
-// Validation errors are returned as-is (the caller surfaces them to the
-// operator). Storage and deploy errors are wrapped with context.
 func (s *Service) Deploy(ctx context.Context, p Payload) (*DeployResult, error) {
 	if p.Manifest == "" {
 		return nil, fmt.Errorf("manifest: required")
@@ -107,7 +78,7 @@ func (s *Service) Deploy(ctx context.Context, p Payload) (*DeployResult, error) 
 	if err != nil {
 		return nil, fmt.Errorf("assign revision: %w", err)
 	}
-	payloadJSON, _ := json.Marshal(p) // best-effort; never errors for our shape
+	payloadJSON, _ := json.Marshal(p)
 	rev := &store.StackRevision{
 		StackName:    app.Name,
 		Revision:     revision,
@@ -119,17 +90,14 @@ func (s *Service) Deploy(ctx context.Context, p Payload) (*DeployResult, error) 
 		return nil, fmt.Errorf("record deploy: %w", err)
 	}
 
-	// Pre-deploy backup hook. Best-effort: a flaky backup container should
-	// never block an urgent deploy. Operator sees the failure in the
-	// backups audit table and in the deploy output.
+	// Best-effort: a flaky backup never blocks the deploy.
 	if app.BackupBeforeDeploy {
 		s.runPreDeployBackup(ctx, app.Name, revision)
 	}
 
 	if err := s.Deployer.DeployStack(ctx, app.Name, rendered); err != nil {
-		// The stack row is now in a "recorded but not applied" state. We
-		// intentionally don't roll it back — the next run can see what was
-		// attempted. Operator can re-deploy or rollback.
+		// "Recorded but not applied" is intentional — operator can see
+		// what was attempted and re-deploy or rollback.
 		return nil, fmt.Errorf("docker stack deploy: %w", err)
 	}
 
@@ -140,12 +108,8 @@ func (s *Service) Deploy(ctx context.Context, p Payload) (*DeployResult, error) 
 	}, nil
 }
 
-// Rollback re-applies a stored revision as a NEW revision (so the audit
-// trail records both deploys, not just an arbitrary "current" pointer).
-//
-// Source/Rendered YAML are copied verbatim from the source revision; the
-// new revision id is a fresh timestamp. PayloadJSON gets a synthetic
-// rollback marker so it's distinguishable from forward deploys.
+// Rollback re-applies a stored revision as a NEW revision so the audit
+// trail records both deploys. PayloadJSON carries a rollback_of marker.
 func (s *Service) Rollback(ctx context.Context, stackName string, sourceRevision int64) (*DeployResult, error) {
 	src, err := s.Store.GetRevision(ctx, stackName, sourceRevision)
 	if err != nil {
@@ -183,14 +147,10 @@ func (s *Service) Rollback(ctx context.Context, stackName string, sourceRevision
 	}, nil
 }
 
-// runPreDeployBackup triggers a backup and records its outcome. Errors are
-// swallowed — recorded in the audit table and surfaced via the next
-// `pmcluster backup list`, but never fail the deploy.
+// runPreDeployBackup records its outcome in the audit table; never blocks.
 func (s *Service) runPreDeployBackup(ctx context.Context, stackName string, revision int64) {
 	id, err := s.Store.CreateBackup(ctx, stackName, revision)
 	if err != nil {
-		// Audit-log insert failed — log via the deploy result is not an
-		// option here, so just bail. The deploy continues.
 		return
 	}
 	if s.Backup == nil {

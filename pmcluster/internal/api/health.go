@@ -1,5 +1,4 @@
-// Package api implements the pmcluster HTTP handlers — REST endpoints
-// served by internal/server. Phase 1 covers /health and /api/me.
+// Package api implements the pmcluster HTTP handlers.
 package api
 
 import (
@@ -9,11 +8,8 @@ import (
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/buildinfo"
 )
 
-// Health is an unauthenticated liveness endpoint suitable for use by
-// supervisors (brew services, systemd, k8s, load balancers).
-//
-// Returns 200 with a small JSON body. Does NOT touch the DB or Docker —
-// liveness should not block on dependencies.
+// Health is unauthenticated and never touches DB or Docker — liveness
+// must not block on dependencies.
 func Health(w http.ResponseWriter, _ *http.Request) {
 	v, c, _ := buildinfo.Resolve()
 	body := map[string]any{

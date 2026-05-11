@@ -25,13 +25,11 @@ var nodeListCmd = &cobra.Command{
 var nodeJoinTokenCmd = &cobra.Command{
 	Use:   "join-token [worker|manager]",
 	Short: "Print the swarm join token for the given role",
-	Long: `Prints the literal command an operator runs on a new node:
+	Long: `Prints the literal command to run on a new node:
 
   docker swarm join --token <TOKEN> <MANAGER>:2377
 
-Pass "worker" (default) for adding a worker; "manager" for an additional
-manager (high-availability). Tokens are sensitive — they grant Swarm
-membership.`,
+Tokens are sensitive — they grant Swarm membership.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runNodeJoinToken,
 }
@@ -41,8 +39,6 @@ func init() {
 	rootCmd.AddCommand(nodeCmd)
 }
 
-// openDocker is a tiny shared helper for node commands — they don't need
-// the SQLite store, just a docker.Client.
 func openDocker() (docker.Client, error) {
 	dc, err := docker.New()
 	if err != nil {
@@ -81,7 +77,6 @@ func runNodeList(cmd *cobra.Command, _ []string) error {
 	if err := w.Flush(); err != nil {
 		return err
 	}
-	// Time annotations as a one-line trailer (kept out of the table for noise).
 	for _, n := range nodes {
 		if n.IsLeader {
 			fmt.Fprintf(cmd.OutOrStdout(), "\nLeader address: %s (joined %s)\n",
@@ -115,8 +110,6 @@ func runNodeJoinToken(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Find the leader manager so we can show its advertise address — the
-	// thing operators paste into `docker swarm join`.
 	var leaderAddr string
 	for _, n := range nodes {
 		if n.IsLeader && n.Address != "" {

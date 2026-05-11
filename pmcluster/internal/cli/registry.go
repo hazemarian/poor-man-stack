@@ -20,13 +20,10 @@ import (
 var registryCmd = &cobra.Command{
 	Use:   "registry",
 	Short: "Manage Docker registry credentials for private image pulls",
-	Long: `pmcluster stores per-host registry credentials encrypted in SQLite AND
-runs 'docker login <host>' so the credentials land in ~/.docker/config.json.
-
-Subsequent 'pmcluster deploy' / 'pmcluster cluster up' calls use
-'docker stack deploy --with-registry-auth' which forwards the manager's
-auth to all swarm nodes — workers can then pull private images without
-their own login.`,
+	Long: `Stores per-host credentials encrypted in SQLite AND runs 'docker login'
+so they land in ~/.docker/config.json. 'docker stack deploy
+--with-registry-auth' then forwards the manager's auth to every node so
+workers can pull private images without their own login.`,
 }
 
 var registryAddCmd = &cobra.Command{
@@ -88,15 +85,12 @@ func runRegistryAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("open encryption key: %w", err)
 	}
 
-	// Step 1: docker login. We do this BEFORE persisting so a bad credential
-	// fails loud (the operator sees docker's error verbatim) rather than
-	// being saved as garbage that breaks deploys later.
+	// docker login first: bad credentials fail loud rather than being
+	// saved as garbage that breaks future deploys.
 	if err := dockerLogin(cmd, host, username, password); err != nil {
 		return fmt.Errorf("docker login %s: %w", host, err)
 	}
 
-	// Step 2: persist (encrypted). Update if the host is already known
-	// (idempotent re-add — useful for credential rotation).
 	ciphertext, err := cipher.Encrypt([]byte(password))
 	if err != nil {
 		return fmt.Errorf("encrypt password: %w", err)
@@ -162,8 +156,6 @@ func runRegistryRemove(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Best-effort docker logout; don't fail if it errors (host might already
-	// be cleaned up, daemon might be unreachable, etc.).
 	if out, err := exec.CommandContext(cmd.Context(), "docker", "logout", host).CombinedOutput(); err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: docker logout %s: %v\n%s\n", host, err, out)
 	}
@@ -172,8 +164,7 @@ func runRegistryRemove(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// readPassword resolves the password from --password / --password-stdin /
-// interactive TTY prompt. Returns empty string + error on misuse.
+// readPassword resolves --password, --password-stdin, or an interactive prompt.
 func readPassword(cmd *cobra.Command) (string, error) {
 	pwFlag, _ := cmd.Flags().GetString("password")
 	stdinFlag, _ := cmd.Flags().GetBool("password-stdin")
@@ -192,8 +183,6 @@ func readPassword(cmd *cobra.Command) (string, error) {
 		return strings.TrimRight(string(data), "\r\n"), nil
 	}
 
-	// Interactive prompt. Best-effort — if stdin isn't a TTY, the operator
-	// is expected to use --password-stdin instead.
 	fmt.Fprint(cmd.ErrOrStderr(), "Password: ")
 	r := bufio.NewReader(os.Stdin)
 	line, err := r.ReadString('\n')
@@ -203,9 +192,6 @@ func readPassword(cmd *cobra.Command) (string, error) {
 	return strings.TrimRight(line, "\r\n"), nil
 }
 
-// dockerLogin runs `docker login <host> -u <user> --password-stdin`,
-// piping the password via stdin. Stderr is forwarded so the operator sees
-// docker's error messages verbatim.
 func dockerLogin(cmd *cobra.Command, host, username, password string) error {
 	dlogin := exec.CommandContext(cmd.Context(), "docker", "login",
 		host, "-u", username, "--password-stdin")

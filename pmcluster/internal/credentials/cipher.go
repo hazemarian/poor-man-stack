@@ -1,14 +1,9 @@
-// Package credentials handles at-rest encryption for sensitive values that
-// pmcluster stores in SQLite (managed component passwords, registry creds,
-// webhook secrets).
+// Package credentials handles AES-256-GCM at-rest encryption for values
+// pmcluster stores in SQLite. The 32-byte key lives at
+// $DataDir/.encryption_key (mode 0600); losing it renders all encrypted
+// credentials unrecoverable — back it up with the DB.
 //
-// The encryption key is generated on first use and persisted to a file at
-// $DataDir/.encryption_key (mode 0600, owner-only). Loss of that file
-// renders all stored credentials unrecoverable — operators are responsible
-// for backing it up alongside the SQLite DB.
-//
-// Algorithm: AES-256-GCM. Nonce is 12 random bytes per ciphertext, prepended
-// to the output. Tampered ciphertext fails decryption with a clean error.
+// Format: 12-byte nonce || gcm_seal(plaintext). Tamper → ErrInvalidCiphertext.
 package credentials
 
 import (
@@ -21,27 +16,21 @@ import (
 	"os"
 )
 
-// keyBytes is the AES-256 key length.
-const keyBytes = 32
+const (
+	keyBytes   = 32 // AES-256
+	nonceBytes = 12 // GCM standard
+)
 
-// nonceBytes is the GCM nonce length.
-const nonceBytes = 12
-
-// ErrInvalidCiphertext indicates the ciphertext is malformed (too short to
-// contain a nonce) or has been tampered with (GCM auth tag mismatch).
+// ErrInvalidCiphertext: malformed input or GCM auth tag mismatch.
 var ErrInvalidCiphertext = errors.New("invalid or tampered ciphertext")
 
-// Cipher encrypts and decrypts byte slices with a key loaded from disk.
-// Construct via Open. Safe for concurrent use after construction.
+// Cipher is safe for concurrent use after construction.
 type Cipher struct {
 	gcm cipher.AEAD
 }
 
-// Open loads the encryption key from path, creating it (mode 0600) on first
-// use. Returns a Cipher ready for Encrypt/Decrypt calls.
-//
-// Parent directory must already exist with safe permissions; pmcluster init
-// creates ~/.pmcluster/ with mode 0700.
+// Open loads the key, creating it (mode 0600) on first use. The parent
+// directory must already exist with safe permissions.
 func Open(path string) (*Cipher, error) {
 	key, err := loadOrCreateKey(path)
 	if err != nil {
@@ -58,8 +47,7 @@ func Open(path string) (*Cipher, error) {
 	return &Cipher{gcm: gcm}, nil
 }
 
-// Encrypt produces ciphertext = nonce(12B) || gcm_seal(plaintext).
-// Each call generates a fresh nonce.
+// Encrypt: nonce(12B) || gcm_seal(plaintext). Fresh nonce per call.
 func (c *Cipher) Encrypt(plaintext []byte) ([]byte, error) {
 	nonce := make([]byte, nonceBytes)
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
@@ -72,8 +60,8 @@ func (c *Cipher) Encrypt(plaintext []byte) ([]byte, error) {
 	return out, nil
 }
 
-// Decrypt reverses Encrypt. Returns ErrInvalidCiphertext for any tamper or
-// malformed input — never panics, never leaks plaintext on auth failure.
+// Decrypt returns ErrInvalidCiphertext for any tamper or malformed
+// input; never panics, never leaks plaintext on auth failure.
 func (c *Cipher) Decrypt(ciphertext []byte) ([]byte, error) {
 	if len(ciphertext) < nonceBytes {
 		return nil, ErrInvalidCiphertext
@@ -86,8 +74,6 @@ func (c *Cipher) Decrypt(ciphertext []byte) ([]byte, error) {
 	return plain, nil
 }
 
-// loadOrCreateKey reads the AES key from disk; if missing, generates a fresh
-// 32-byte key and writes it with mode 0600. Validates length when reading.
 func loadOrCreateKey(path string) ([]byte, error) {
 	data, err := os.ReadFile(path)
 	if err == nil {
@@ -104,9 +90,7 @@ func loadOrCreateKey(path string) ([]byte, error) {
 	if _, err := io.ReadFull(rand.Reader, key); err != nil {
 		return nil, fmt.Errorf("generate key: %w", err)
 	}
-	// O_EXCL: never overwrite an existing file (race-safe vs another pmcluster
-	// process initialising at the same time — though that's vanishingly rare
-	// since `pmcluster init` is the one place this gets called concurrently).
+	// O_EXCL: never overwrite an existing key file.
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("create key file: %w", err)

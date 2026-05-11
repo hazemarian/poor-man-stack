@@ -11,15 +11,13 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// EnsureSecret creates a Docker Swarm secret from `data` if a secret with
-// that name doesn't already exist. Returns true iff newly created.
+// EnsureSecret creates a Swarm secret if one with this name doesn't
+// exist; returns true iff newly created. Existing secrets are NEVER
+// modified — rotation is "remove + recreate + force-redeploy", handled
+// by CredentialsManager.Rotate.
 //
-// CRITICAL: Existing secrets are NEVER modified. To rotate, callers must
-// explicitly remove the secret first AND force-redeploy any consuming
-// services (Phase 2.2 `pmcluster credentials rotate` does this dance).
-//
-// All pmcluster-managed secrets get a label so `cluster down --purge` can
-// identify them without nuking operator-created secrets.
+// pmcluster-managed secrets carry the pmclusterLabel so `cluster down
+// --purge` can target them without touching operator-created secrets.
 func EnsureSecret(ctx context.Context, d docker.Client, name string, data []byte) (created bool, err error) {
 	exists, err := d.SecretExists(ctx, name)
 	if err != nil {
@@ -41,8 +39,6 @@ func EnsureSecret(ctx context.Context, d docker.Client, name string, data []byte
 	return true, nil
 }
 
-// EnsureSecretFromFile is a thin convenience wrapper around EnsureSecret
-// for cert/key/etc. that come from disk.
 func EnsureSecretFromFile(ctx context.Context, d docker.Client, name, path string) (bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -51,13 +47,8 @@ func EnsureSecretFromFile(ctx context.Context, d docker.Client, name, path strin
 	return EnsureSecret(ctx, d, name, data)
 }
 
-// EnsureConfig is the Docker-config analogue of EnsureSecret. Used for
-// rendered YAML payloads (OTel pipeline, Traefik dynamic) that bundled
-// services need at known paths. Replicated to every node by Swarm.
-//
-// Like secrets, configs are immutable; rotation is "remove + recreate +
-// force-redeploy consuming services" (handled by `pmcluster cluster
-// reconcile` in a later phase, or `cluster down --purge` + `cluster up`).
+// EnsureConfig is the Docker-config analogue of EnsureSecret. Configs are
+// also immutable; same rotation dance applies.
 func EnsureConfig(ctx context.Context, d docker.Client, name string, data []byte) (created bool, err error) {
 	exists, err := d.ConfigExists(ctx, name)
 	if err != nil {
@@ -79,12 +70,7 @@ func EnsureConfig(ctx context.Context, d docker.Client, name string, data []byte
 	return true, nil
 }
 
-// RandomPassword returns a cryptographically random URL-safe password of
-// approximately 32 characters (24 bytes of entropy, base64url-encoded).
-//
-// Used for bootstrap credentials (Traefik admin, Portainer admin,
-// OpenObserve admin). NOT used for the pmcluster admin token — that uses
-// auth.GenerateToken (also random, but separately scoped).
+// RandomPassword returns a 24-byte (~32-char base64url) random password.
 func RandomPassword() (string, error) {
 	const entropy = 24
 	buf := make([]byte, entropy)
@@ -94,12 +80,8 @@ func RandomPassword() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
-// HtpasswdLine produces an Apache htpasswd entry "user:bcrypt-hash\n"
-// suitable for Traefik's basicAuth middleware (which reads `usersFile`).
-//
-// Cost 10 = ~100 ms per hash on modern hardware: a sweet spot between
-// "fast enough that startup isn't perceptibly slow" and "expensive enough
-// that the hash has some defensive value if the secret leaks".
+// HtpasswdLine produces "user:bcrypt-hash\n" for Traefik's basicAuth
+// middleware. Cost 10 ≈ 100 ms/hash — defensive without slowing startup.
 func HtpasswdLine(user, password string) (string, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), 10)
 	if err != nil {

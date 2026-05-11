@@ -10,50 +10,35 @@ import (
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/store"
 )
 
-// UpInput is everything `pmcluster cluster up` needs to bootstrap the
-// cluster from a fresh manager. Sourced from CLI flags + persisted config.
 type UpInput struct {
 	Domain                string
 	CertPath              string
 	KeyPath               string
-	TraefikAdminUser      string // default "admin" if empty
-	OpenObserveAdminEmail string // operator's email
+	TraefikAdminUser      string // defaults to "admin"
+	OpenObserveAdminEmail string
 }
 
-// UpResult summarises everything Up did, suitable for printing to the operator
-// at the end of `pmcluster cluster up`. Includes the plaintext bootstrap
-// passwords for any credentials that were newly created on this run.
+// UpResult includes plaintext passwords for any credentials newly minted
+// on this run; existing ones are returned with NewlyCreated=false.
 type UpResult struct {
-	NewNetworks         []string
-	NewSecrets          []string
-	NewConfigs          []string
-	StacksDeployed      []string
+	NewNetworks          []string
+	NewSecrets           []string
+	NewConfigs           []string
+	StacksDeployed       []string
 	BootstrapCredentials map[string]*ManagedCredential
 }
 
-// UpDeps bundles the collaborators Up needs. Constructed by the CLI; each
-// field can be substituted for tests.
 type UpDeps struct {
 	Store    *store.Store
 	Cipher   *credentials.Cipher
 	Docker   docker.Client
 	Deployer StackDeployer
-
-	// Stdout is where progress lines are written. Use os.Stdout from the CLI;
-	// io.Discard from tests if you don't care about the output.
-	Stdout io.Writer
+	Stdout   io.Writer // io.Discard in tests
 }
 
-// Up brings the cluster up end-to-end. Idempotent: every step uses the
-// "ensure" pattern and never modifies existing state.
-//
-// Order matters:
-//  1. Preflight (Docker daemon + Swarm + manager role)
-//  2. Networks (traefik-net, monitoring-net)
-//  3. TLS secrets from cert/key files (cert, key)
-//  4. Bootstrap credentials (Traefik admin htpasswd, Portainer pwd, OpenObserve pwd)
-//  5. Render configs (OTel pipeline + Traefik dynamic) and create as Docker configs
-//  6. Deploy stacks (infra → observability → backup)
+// Up brings the cluster up end-to-end. Order matters: preflight →
+// networks → TLS secrets → bootstrap creds → render configs → deploy
+// stacks (infra → observability → backup).
 func Up(ctx context.Context, deps UpDeps, in UpInput) (*UpResult, error) {
 	if err := validateUpInput(in); err != nil {
 		return nil, err
@@ -66,13 +51,11 @@ func Up(ctx context.Context, deps UpDeps, in UpInput) (*UpResult, error) {
 	res := &UpResult{}
 	step := func(label string) { fmt.Fprintf(out, "▶ %s\n", label) }
 
-	// ── 1. Preflight ─────────────────────────────────────────────────────
 	step("Preflight: Docker reachable, Swarm active, this node is a manager")
 	if err := Preflight(ctx, deps.Docker); err != nil {
 		return nil, err
 	}
 
-	// ── 2. Networks ──────────────────────────────────────────────────────
 	step("Ensuring overlay networks")
 	created, err := EnsureBundledNetworks(ctx, deps.Docker)
 	if err != nil {
@@ -80,7 +63,6 @@ func Up(ctx context.Context, deps UpDeps, in UpInput) (*UpResult, error) {
 	}
 	res.NewNetworks = created
 
-	// ── 3. TLS cert/key secrets from disk ────────────────────────────────
 	step("Loading TLS cert/key into Swarm secrets")
 	for _, t := range []struct{ name, path string }{
 		{"cert", in.CertPath},
@@ -95,7 +77,6 @@ func Up(ctx context.Context, deps UpDeps, in UpInput) (*UpResult, error) {
 		}
 	}
 
-	// ── 4. Bootstrap credentials ────────────────────────────────────────
 	step("Bootstrapping managed credentials (Traefik / Portainer / OpenObserve)")
 	credMgr := &CredentialsManager{
 		Store:  deps.Store,
@@ -116,9 +97,9 @@ func Up(ctx context.Context, deps UpDeps, in UpInput) (*UpResult, error) {
 			res.NewSecrets = append(res.NewSecrets, c.SwarmSecretName)
 			fmt.Fprintf(out, "  ✓ %-20s newly created (swarm secret %s)\n", name, c.SwarmSecretName)
 		case c.NewlyCreated && !c.SwarmSecretCreated:
-			// Lost-DB recovery scenario: pmcluster minted a new password,
-			// but a Swarm secret with that name already existed (from a
-			// prior install with a now-gone DB). The two now disagree.
+			// "Lost DB, kept Swarm" recovery: pmcluster minted a new
+			// password but a Swarm secret with that name already existed.
+			// Store and Swarm now disagree.
 			fmt.Fprintf(out, "  ⚠ %-20s store updated, but Swarm secret %s pre-existed (passwords may diverge)\n", name, c.SwarmSecretName)
 		case !c.NewlyCreated && c.SwarmSecretCreated:
 			res.NewSecrets = append(res.NewSecrets, c.SwarmSecretName)
@@ -128,7 +109,6 @@ func Up(ctx context.Context, deps UpDeps, in UpInput) (*UpResult, error) {
 		}
 	}
 
-	// ── 5. Render Docker configs (OTel + Traefik dynamic) ───────────────
 	step("Rendering and creating Docker configs (OTel pipeline, Traefik dynamic)")
 	openobsCred := creds["openobserve_admin"]
 	if openobsCred == nil {
@@ -160,7 +140,6 @@ func Up(ctx context.Context, deps UpDeps, in UpInput) (*UpResult, error) {
 		res.NewConfigs = append(res.NewConfigs, "pmcluster_traefik_dynamic")
 	}
 
-	// ── 6. Deploy stacks ─────────────────────────────────────────────────
 	step("Deploying stacks (infra → observability → backup)")
 	for _, s := range []stackName{StackInfra, StackObservability, StackBackup} {
 		composeYAML, err := LoadComposeFile(s, render)
@@ -178,8 +157,6 @@ func Up(ctx context.Context, deps UpDeps, in UpInput) (*UpResult, error) {
 	return res, nil
 }
 
-// validateUpInput catches the obvious user mistakes early so we don't get a
-// confusing failure five steps in.
 func validateUpInput(in UpInput) error {
 	if in.Domain == "" {
 		return fmt.Errorf("--domain is required")

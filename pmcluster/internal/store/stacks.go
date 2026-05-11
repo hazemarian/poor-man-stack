@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// Stack is a deployed application's metadata. The actual compose contents
-// live in StackRevision rows, keyed by unix-timestamp revision id.
+// Stack metadata; compose contents live in StackRevision rows keyed by
+// unix-timestamp revision id.
 type Stack struct {
 	Name            string
 	CurrentRevision int64
@@ -18,32 +18,20 @@ type Stack struct {
 	UpdatedAt       int64
 }
 
-// StackRevision is one historical (or current) deploy of a stack.
-// SourceYAML is the operator-submitted DSL; RenderedYAML is what pmcluster
-// piped to `docker stack deploy`. PayloadJSON captures the full webhook/API
-// envelope (for audit/UI).
 type StackRevision struct {
 	StackName    string
 	Revision     int64
-	SourceYAML   string
-	RenderedYAML string
-	PayloadJSON  sql.NullString
+	SourceYAML   string         // operator-submitted DSL
+	RenderedYAML string         // what pmcluster piped to `docker stack deploy`
+	PayloadJSON  sql.NullString // full webhook/API envelope, for audit
 	CreatedAt    int64
 }
 
-// ErrStackNotFound is returned by GetStack/GetRevision when the row is missing.
 var ErrStackNotFound = errors.New("stack not found")
-
-// ErrRevisionNotFound is returned by GetRevision when the (stack, revision) pair is missing.
 var ErrRevisionNotFound = errors.New("revision not found")
 
-// RecordDeploy is the canonical "I just deployed something" call. Atomic:
-// inserts the new revision row AND upserts the stack row's current_revision
-// pointer. revision must be a unix timestamp produced by the caller (so the
-// deploy service can stamp source/rendered together with the same id).
-//
-// On a brand-new stack, the row is inserted with created_at=updated_at=now.
-// On a re-deploy, only updated_at moves.
+// RecordDeploy atomically inserts the new revision and upserts the stack
+// row's current_revision pointer.
 func (s *Store) RecordDeploy(ctx context.Context, rev *StackRevision, repoURL string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -53,8 +41,8 @@ func (s *Store) RecordDeploy(ctx context.Context, rev *StackRevision, repoURL st
 
 	now := time.Now().Unix()
 
-	// Insert the revision row first so the FK target on stacks(name) is
-	// satisfied by the time we touch the parent.
+	// Try inserting the revision first; if the FK fails this is a brand
+	// new stack and we recover by inserting the parent then retrying.
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO stack_revisions
 		   (stack_name, revision, source_yaml, rendered_yaml, payload_json, created_at)
@@ -62,8 +50,6 @@ func (s *Store) RecordDeploy(ctx context.Context, rev *StackRevision, repoURL st
 		rev.StackName, rev.Revision, rev.SourceYAML, rev.RenderedYAML,
 		nullableString(rev.PayloadJSON.String, rev.PayloadJSON.Valid), now,
 	); err != nil {
-		// FK isn't satisfied yet (this is the first deploy for this stack)
-		// — fall through and insert the parent first, then retry.
 		if !isForeignKeyViolation(err) {
 			return fmt.Errorf("insert revision: %w", err)
 		}
@@ -89,7 +75,6 @@ func (s *Store) RecordDeploy(ctx context.Context, rev *StackRevision, repoURL st
 		return nil
 	}
 
-	// Revision insert succeeded → stack row already exists. Update pointer.
 	res, err := tx.ExecContext(ctx,
 		`UPDATE stacks SET current_revision = ?, updated_at = ?, repo_url = COALESCE(NULLIF(?, ''), repo_url)
 		 WHERE name = ?`,
@@ -103,8 +88,8 @@ func (s *Store) RecordDeploy(ctx context.Context, rev *StackRevision, repoURL st
 		return fmt.Errorf("rows affected: %w", err)
 	}
 	if n == 0 {
-		// Defensive: revision insert worked (so FK was OK) but stack
-		// disappeared. Race with a delete? Re-create.
+		// Defensive: revision insert worked (FK satisfied) but parent
+		// disappeared — race with a concurrent delete. Re-create.
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO stacks (name, current_revision, repo_url, created_at, updated_at)
 			 VALUES (?, ?, ?, ?, ?)`,
@@ -120,7 +105,6 @@ func (s *Store) RecordDeploy(ctx context.Context, rev *StackRevision, repoURL st
 	return nil
 }
 
-// GetStack fetches a stack row by name.
 func (s *Store) GetStack(ctx context.Context, name string) (*Stack, error) {
 	var st Stack
 	err := s.db.QueryRowContext(ctx,
@@ -135,7 +119,6 @@ func (s *Store) GetStack(ctx context.Context, name string) (*Stack, error) {
 	return &st, nil
 }
 
-// ListStacks returns all stacks ordered by name.
 func (s *Store) ListStacks(ctx context.Context) ([]*Stack, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT name, current_revision, repo_url, created_at, updated_at FROM stacks ORDER BY name`,
@@ -155,14 +138,9 @@ func (s *Store) ListStacks(ctx context.Context) ([]*Stack, error) {
 	return out, rows.Err()
 }
 
-// NextFreeRevision returns the smallest revision id ≥ candidate that is
-// NOT already used for stackName. Lets callers (deploy + rollback)
-// generate a unix-timestamp candidate and survive sub-second collisions
-// (back-to-back deploys/rollbacks in the same second).
-//
-// Bounded scan: caps at candidate+10000 to avoid pathological loops if
-// something is very wrong. In practice we exit on the second iteration
-// at most.
+// NextFreeRevision returns the smallest unused revision id ≥ candidate.
+// Lets callers pass time.Now().Unix() and survive sub-second collisions
+// from back-to-back deploys.
 func (s *Store) NextFreeRevision(ctx context.Context, stackName string, candidate int64) (int64, error) {
 	const maxAttempts = 10000
 	for i := int64(0); i < maxAttempts; i++ {
@@ -182,8 +160,6 @@ func (s *Store) NextFreeRevision(ctx context.Context, stackName string, candidat
 	return 0, fmt.Errorf("could not find a free revision for %s near %d after %d attempts", stackName, candidate, maxAttempts)
 }
 
-// GetRevision fetches one specific revision (used by the rollback flow,
-// which loads the stored RenderedYAML and re-applies it as a new revision).
 func (s *Store) GetRevision(ctx context.Context, stackName string, revision int64) (*StackRevision, error) {
 	var r StackRevision
 	err := s.db.QueryRowContext(ctx,
@@ -200,8 +176,8 @@ func (s *Store) GetRevision(ctx context.Context, stackName string, revision int6
 	return &r, nil
 }
 
-// ListRevisions returns up to `limit` most recent revisions for a stack,
-// newest first. limit ≤ 0 means "all".
+// ListRevisions returns up to limit most recent revisions, newest first.
+// limit ≤ 0 means all.
 func (s *Store) ListRevisions(ctx context.Context, stackName string, limit int) ([]*StackRevision, error) {
 	var rows *sql.Rows
 	var err error
@@ -233,8 +209,6 @@ func (s *Store) ListRevisions(ctx context.Context, stackName string, limit int) 
 	return out, rows.Err()
 }
 
-// nullableString turns ("foo", true) → sql.NullString{Foo, true} as a
-// driver argument. ("anything", false) → driver-side NULL.
 func nullableString(s string, valid bool) any {
 	if !valid {
 		return nil

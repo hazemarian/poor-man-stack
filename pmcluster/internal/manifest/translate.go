@@ -8,22 +8,17 @@ import (
 	"github.com/hazemarian/poor-man-stack/pmcluster/pkg/dsl"
 )
 
-// Standard external resources every translated stack expects to exist.
-// Created by `pmcluster cluster up`; the translator emits `external: true`
-// references so `docker stack deploy` doesn't try to re-create them.
+// Shared external networks ensured by `pmcluster cluster up`; the
+// translator references them with `external: true`.
 const (
 	traefikNet    = "traefik-net"
 	monitoringNet = "monitoring-net"
 )
 
-// privateNetSuffix is appended to App.Name to form the per-app overlay
-// network where the app's own services talk to each other (e.g.
-// "donation-campaign-net"). Inline overlay (not external).
+// privateNetSuffix forms the per-app inline overlay (e.g.
+// "donation-campaign-net").
 const privateNetSuffix = "-net"
 
-// labelKeyPrefix etc. — the standard label set the translator stamps on
-// every service. Operators can grep their cluster for these to find
-// pmcluster-managed services.
 const (
 	labelService     = "service"
 	labelApplication = "application"
@@ -32,12 +27,8 @@ const (
 )
 
 // Translate renders a validated, interpolated *dsl.App into compose v3.9
-// YAML bytes. The output is stable (deterministic field ordering, alpha
-// map sort) so golden-file tests are practical.
-//
-// CALLER MUST run Parse → Interpolate → Validate first; Translate does no
-// validation itself. Calling Translate on an invalid manifest produces
-// invalid compose, which `docker stack deploy` will reject loudly.
+// YAML. CALLER MUST run Parse → Interpolate → Validate first; Translate
+// does no validation itself.
 func Translate(app *dsl.App) ([]byte, error) {
 	cf := &composeFile{
 		Version:  "3.9",
@@ -46,8 +37,8 @@ func Translate(app *dsl.App) ([]byte, error) {
 
 	privateNet := app.Name + privateNetSuffix
 
-	// Track which shared networks we end up using; we only emit them in the
-	// top-level `networks:` block if at least one service consumes them.
+	// Only emit shared networks at the top level if at least one service
+	// references them.
 	usesTraefikNet := false
 	usesMonitoringNet := false
 
@@ -56,7 +47,6 @@ func Translate(app *dsl.App) ([]byte, error) {
 		cf.Services[name] = cs
 	}
 
-	// Volumes block (top-level): one entry per declared local volume.
 	if len(app.Volumes) > 0 {
 		cf.Volumes = map[string]*composeVolume{}
 		for _, v := range app.Volumes {
@@ -64,8 +54,6 @@ func Translate(app *dsl.App) ([]byte, error) {
 		}
 	}
 
-	// Networks block: always emit the private overlay; conditionally emit
-	// the shared externals.
 	cf.Networks = map[string]*composeNetwork{
 		privateNet: {Driver: "overlay"},
 	}
@@ -76,7 +64,6 @@ func Translate(app *dsl.App) ([]byte, error) {
 		cf.Networks[monitoringNet] = &composeNetwork{External: true}
 	}
 
-	// Secrets block: every secret declared at the App level becomes external.
 	if len(app.Secrets) > 0 {
 		cf.Secrets = map[string]*composeSecret{}
 		for _, s := range app.Secrets {
@@ -91,8 +78,7 @@ func Translate(app *dsl.App) ([]byte, error) {
 	return out, nil
 }
 
-// translateService renders one DSL service to its compose form. Updates
-// usesTraefikNet / usesMonitoringNet via pointer so the top-level
+// translateService updates the uses*Net pointers so the top-level
 // networks block matches what services actually reference.
 func translateService(
 	app *dsl.App,
@@ -110,9 +96,8 @@ func translateService(
 		Secrets:     s.Secrets,
 	}
 
-	// Networks: every service is on the private overlay. Services with
-	// `expose:` ALSO join traefik-net (so Traefik can reach them) and
-	// monitoring-net (so OTel can scrape them).
+	// Exposed services join traefik-net (so Traefik can reach them) and
+	// monitoring-net (so OTel can scrape them) on top of the private overlay.
 	cs.Networks = []string{privateNet}
 	if s.Expose != nil {
 		cs.Networks = append(cs.Networks, traefikNet, monitoringNet)
@@ -127,20 +112,16 @@ func translateService(
 	return cs
 }
 
-// translateHealthcheck handles both the shorthand types and the full-form.
-// Shorthand maps to a CMD-SHELL invocation; full-form passes through.
 func translateHealthcheck(s *dsl.Service) *composeHealthcheck {
 	if s.Healthcheck == nil {
 		return nil
 	}
 	h := s.Healthcheck
 
-	// Shorthand → canonical compose healthcheck.
 	switch h.Type {
 	case "pg_isready":
-		// Note the doubled $$: Docker Compose interpolates ${VAR} at deploy
-		// time; we want POSTGRES_USER/POSTGRES_DB resolved at *runtime*
-		// inside the container, so we escape with $$.
+		// $$ escapes Compose's deploy-time ${VAR} interpolation so
+		// POSTGRES_USER/POSTGRES_DB resolve at runtime inside the container.
 		return &composeHealthcheck{
 			Test:     []string{"CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"},
 			Interval: "10s",
@@ -156,8 +137,6 @@ func translateHealthcheck(s *dsl.Service) *composeHealthcheck {
 		if path == "" {
 			path = "/"
 		}
-		// wget is in most images; busybox/alpine ship it. We use --spider so
-		// the body isn't downloaded.
 		test := fmt.Sprintf("wget -q --spider http://localhost:%d%s", port, path)
 		return &composeHealthcheck{
 			Test:     []string{"CMD-SHELL", test},
@@ -167,7 +146,6 @@ func translateHealthcheck(s *dsl.Service) *composeHealthcheck {
 		}
 	}
 
-	// Full-form passthrough.
 	return &composeHealthcheck{
 		Test:     h.Test,
 		Interval: h.Interval,
@@ -181,7 +159,6 @@ func translateDeploy(app *dsl.App, name string, s *dsl.Service) *composeDeploy {
 		Labels: standardLabels(app, name),
 	}
 
-	// Replicas / mode / restart policy.
 	switch {
 	case s.RunOnce:
 		d.RestartPolicy = &composeRestartPolicy{Condition: "none"}
@@ -194,7 +171,6 @@ func translateDeploy(app *dsl.App, name string, s *dsl.Service) *composeDeploy {
 		d.RestartPolicy = &composeRestartPolicy{Condition: "on-failure"}
 	}
 
-	// Placement.
 	switch s.Placement {
 	case "manager":
 		d.Placement = &composePlacement{Constraints: []string{"node.role == manager"}}
@@ -202,13 +178,12 @@ func translateDeploy(app *dsl.App, name string, s *dsl.Service) *composeDeploy {
 		d.Placement = &composePlacement{Constraints: []string{"node.role == worker"}}
 	}
 
-	// Update policy: defaults applied even if Update is nil, so re-deploys
-	// roll cleanly. Skip for run-once jobs — they have no update lifecycle.
+	// Defaults apply even when Update is nil so re-deploys roll cleanly;
+	// run-once jobs have no update lifecycle.
 	if !s.RunOnce {
 		d.UpdateConfig = translateUpdate(s.Update)
 	}
 
-	// Traefik labels for exposed services.
 	if s.Expose != nil {
 		addTraefikLabels(d.Labels, app, name, s.Expose)
 	}
@@ -216,8 +191,6 @@ func translateDeploy(app *dsl.App, name string, s *dsl.Service) *composeDeploy {
 	return d
 }
 
-// standardLabels are stamped on every service so operators (and Komodo /
-// Portainer / future UIs) can group services by app/env/version.
 func standardLabels(app *dsl.App, serviceName string) map[string]string {
 	return map[string]string{
 		labelService:     serviceName,
@@ -227,9 +200,8 @@ func standardLabels(app *dsl.App, serviceName string) map[string]string {
 	}
 }
 
-// addTraefikLabels mutates the labels map in place with the standard
-// Traefik routing config for an exposed service. Router/service names are
-// scoped as <app>-<service> to avoid collisions across apps.
+// addTraefikLabels scopes router/service names as <app>-<service> to
+// avoid collisions across apps.
 func addTraefikLabels(labels map[string]string, app *dsl.App, serviceName string, exp *dsl.Expose) {
 	scope := app.Name + "-" + serviceName
 	labels["traefik.enable"] = "true"

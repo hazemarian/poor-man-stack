@@ -17,12 +17,11 @@ import (
 var webhookCmd = &cobra.Command{
 	Use:   "webhook",
 	Short: "Manage HMAC-verified deploy webhook sources",
-	Long: `pmcluster's /webhook/{source} endpoint accepts deploy payloads from CI
-systems with HMAC-SHA256 signature verification. Each "source" is a named
-binding between a CI integration (e.g. github-prod, gitlab-staging) and a
-shared secret. The secret is shown ONCE on creation and stored encrypted.
+	Long: `/webhook/{source} accepts deploy payloads from CI with HMAC-SHA256
+signature verification. Each source is a named (integration, secret) pair.
+The secret is shown ONCE on creation and stored encrypted.
 
-Callers POST to https://pmcluster.<domain>/webhook/<source> with:
+POST shape:
   Header:  X-Pmcluster-Signature: sha256=<hex-of-hmac>
   Body:    {"app_name": "...", "version": "...", "manifest": "..."}`,
 }
@@ -72,18 +71,15 @@ func runWebhookAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("open encryption key: %w", err)
 	}
 
-	// Generate a 32-byte secret as 64 hex chars. CI tools handle hex secrets
-	// well; saves an extra "remember to base64-decode" step for callers.
+	// 32 bytes → 64 hex chars. CI tools handle hex secrets natively.
 	secretBytes := make([]byte, 32)
 	if _, err := rand.Read(secretBytes); err != nil {
 		return fmt.Errorf("generate secret: %w", err)
 	}
 	secretHex := hex.EncodeToString(secretBytes)
 
-	// We HMAC the request body with the SAME bytes the operator pastes into
-	// their CI config — so the stored ciphertext wraps the hex string, not
-	// the raw bytes. This way the verification path decrypts → hex string →
-	// hex.Decode → HMAC; any mismatch fails closed.
+	// Store the hex *string* (not raw bytes) so the operator can paste the
+	// printed value verbatim into CI; HMAC keys with the same string.
 	ciphertext, err := cipher.Encrypt([]byte(secretHex))
 	if err != nil {
 		return fmt.Errorf("encrypt secret: %w", err)

@@ -27,12 +27,8 @@ var serveCmd = &cobra.Command{
 default; Traefik (running in the swarm) routes pmcluster.<domain> to it via
 host.docker.internal:9090.
 
-Typically supervised by launchd/systemd via Homebrew services:
-  brew services start pmcluster
-
 The data directory ($HOME/.pmcluster by default) must already be initialised
-via 'pmcluster init'. Phase 1.4 wires /health and /api/me; richer routes
-(stack management, webhooks, registries) land in later phases.`,
+via 'pmcluster init'.`,
 	RunE: runServe,
 }
 
@@ -56,8 +52,6 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	defer func() { _ = logCloser.Close() }()
 
-	// Best-effort retention sweep on startup. We don't block boot on a
-	// slow filesystem — log and move on.
 	if err := logger.Sweep(cfg.LogsDir(), time.Now()); err != nil {
 		log.Warn().Err(err).Msg("log sweep had issues")
 	}
@@ -68,9 +62,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	defer func() { _ = st.Close() }()
 
-	// Docker client is best-effort: we want the daemon to start even when
-	// /var/run/docker.sock is temporarily missing (e.g. dev box without
-	// Docker running). /api/cluster/info just won't be wired in that case.
+	// Best-effort: daemon must start even when /var/run/docker.sock is
+	// temporarily missing. /api/cluster/info is omitted in that case.
 	dc, dockerErr := docker.New()
 	if dockerErr != nil {
 		log.Warn().Err(dockerErr).Msg("docker client init failed; /api/cluster/info disabled")
@@ -78,9 +71,6 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		defer func() { _ = dc.Close() }()
 	}
 
-	// Replay persisted registry credentials so `docker stack deploy
-	// --with-registry-auth` keeps working after a manager rebuild where
-	// ~/.docker/config.json is gone but the SQLite store survived.
 	if err := replayRegistryLogins(cmd.Context(), st, cfg, log); err != nil {
 		log.Warn().Err(err).Msg("registry re-login had issues; private images may fail to pull")
 	}

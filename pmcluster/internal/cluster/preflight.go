@@ -1,17 +1,7 @@
 // Package cluster owns the lifecycle of the bundled Docker Swarm cluster
 // (Traefik, Portainer, OpenObserve, OTel Collector, volume backup).
-//
-// It replaces the bash bin/setup.sh entirely:
-//   - preflight.go : verify Docker is installed and Swarm is active+manager
-//   - networks.go  : ensure overlay networks exist (idempotent)
-//   - secrets.go   : ensure Docker Swarm secrets exist (idempotent, never modified)
-//   - templates.go : embed and render OTel + Traefik dynamic configs
-//   - stacks.go    : deploy infra/observability/backup stacks
-//   - credentials.go : generate + persist random bootstrap credentials
-//   - up.go        : orchestrate all of the above
-//
-// All operations are designed to be idempotent — re-running `pmcluster
-// cluster up` should reconcile, never destroy or rotate.
+// All operations are idempotent — re-running cluster up reconciles state,
+// never destroys or rotates.
 package cluster
 
 import (
@@ -22,12 +12,11 @@ import (
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/docker"
 )
 
-// PreflightError describes a failed precondition with a remediation string
-// suitable for printing directly to the operator. Callers can pattern-match
-// on the embedded `Cause` if they want to react programmatically.
+// PreflightError pairs a low-level cause with an operator-facing
+// remediation hint suitable for direct printing.
 type PreflightError struct {
-	Cause       error  // wrapped low-level error, may be nil for "wrong state" failures
-	Remediation string // operator-facing hint, e.g. "run docker swarm init --advertise-addr <ip>"
+	Cause       error
+	Remediation string
 }
 
 func (e *PreflightError) Error() string {
@@ -39,16 +28,8 @@ func (e *PreflightError) Error() string {
 
 func (e *PreflightError) Unwrap() error { return e.Cause }
 
-// Preflight runs every check the cluster bootstrap depends on, returning the
-// first failure with a remediation string. Returns nil iff all checks pass.
-//
-// Checks (in order):
-//  1. Docker daemon is reachable (Ping succeeds)
-//  2. Local node is part of an active Swarm
-//  3. Local node is a Swarm manager (control plane available)
-//
-// Each failure surfaces as a *PreflightError so callers (CLI, future API
-// endpoints) can render the remediation consistently.
+// Preflight checks (in order): docker reachable, swarm active, this
+// node is a manager. Returns the first failure as *PreflightError.
 func Preflight(ctx context.Context, d docker.Client) error {
 	if _, err := d.Ping(ctx); err != nil {
 		return &PreflightError{
