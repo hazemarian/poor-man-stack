@@ -173,3 +173,93 @@ func TestRenderTraefikDynamic_EmptyDomain(t *testing.T) {
 		t.Fatal("expected error for empty Domain, got nil")
 	}
 }
+
+// TestRenderTraefikDynamic_ACMEMode verifies the ACME branch emits the
+// certResolver tag and drops the static-cert tls block.
+func TestRenderTraefikDynamic_ACMEMode(t *testing.T) {
+	in := RenderInput{Domain: "x.example.com", ACMEEmail: "ops@example.com"}
+	data, err := RenderTraefikDynamic(in)
+	if err != nil {
+		t.Fatalf("RenderTraefikDynamic: %v", err)
+	}
+	body := string(data)
+	if !strings.Contains(body, "certResolver: letsencrypt") {
+		t.Errorf("ACME mode missing certResolver line:\n%s", body)
+	}
+	if strings.Contains(body, "/run/secrets/cert") || strings.Contains(body, "/run/secrets/key") {
+		t.Errorf("ACME mode must not reference static cert/key secrets:\n%s", body)
+	}
+}
+
+// TestRenderTraefikDynamic_BYOMode verifies the legacy path stays intact
+// when ACMEEmail is empty.
+func TestRenderTraefikDynamic_BYOMode(t *testing.T) {
+	in := RenderInput{Domain: "x.example.com"}
+	data, err := RenderTraefikDynamic(in)
+	if err != nil {
+		t.Fatalf("RenderTraefikDynamic: %v", err)
+	}
+	body := string(data)
+	if strings.Contains(body, "certResolver") {
+		t.Errorf("BYO mode must not emit certResolver:\n%s", body)
+	}
+	if !strings.Contains(body, "/run/secrets/cert") || !strings.Contains(body, "/run/secrets/key") {
+		t.Errorf("BYO mode must reference static cert/key secrets:\n%s", body)
+	}
+}
+
+// TestLoadComposeFile_InfraACMEMode verifies the infra stack picks up the
+// ACME-specific Traefik flags + volume in ACME mode and drops the cert/key
+// secret declarations.
+func TestLoadComposeFile_InfraACMEMode(t *testing.T) {
+	body, err := LoadComposeFile(StackInfra, RenderInput{
+		Domain:    "x.example.com",
+		ACMEEmail: "ops@example.com",
+	})
+	if err != nil {
+		t.Fatalf("LoadComposeFile: %v", err)
+	}
+	s := string(body)
+	for _, want := range []string{
+		"certificatesresolvers.letsencrypt.acme.email=ops@example.com",
+		"--certificatesresolvers.letsencrypt.acme.httpchallenge=true",
+		"traefik_acme:/letsencrypt",
+		"traefik.http.routers.traefik.tls.certresolver=letsencrypt",
+		"traefik.http.routers.portainer.tls.certresolver=letsencrypt",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("ACME-mode infra stack missing %q", want)
+		}
+	}
+	for _, unwanted := range []string{
+		"  cert:\n    external: true",
+		"  key:\n    external: true",
+	} {
+		if strings.Contains(s, unwanted) {
+			t.Errorf("ACME-mode infra stack should NOT contain %q", unwanted)
+		}
+	}
+}
+
+// TestLoadComposeFile_InfraBYOMode verifies the legacy operator-cert path.
+func TestLoadComposeFile_InfraBYOMode(t *testing.T) {
+	body, err := LoadComposeFile(StackInfra, RenderInput{Domain: "x.example.com"})
+	if err != nil {
+		t.Fatalf("LoadComposeFile: %v", err)
+	}
+	s := string(body)
+	if strings.Contains(s, "certificatesresolvers.letsencrypt") {
+		t.Errorf("BYO-mode infra stack must not contain ACME flags")
+	}
+	if strings.Contains(s, "traefik_acme") {
+		t.Errorf("BYO-mode infra stack must not declare the ACME volume")
+	}
+	for _, want := range []string{
+		"  cert:\n    external: true",
+		"  key:\n    external: true",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("BYO-mode infra stack missing %q", want)
+		}
+	}
+}

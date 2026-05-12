@@ -28,7 +28,10 @@ var clusterUpCmd = &cobra.Command{
 
   - Preflight (Docker reachable, Swarm active, this node is a manager)
   - Ensure overlay networks (traefik-net, monitoring-net)
-  - Load TLS cert/key into Swarm secrets
+  - Configure TLS:
+      --acme-email <you@host>   Let's Encrypt via Traefik HTTP-01
+                                (DNS must point here AND port 80 must be reachable)
+      --cert <pem> --key <pem>  Operator-supplied certificate
   - Generate random bootstrap credentials for traefik/portainer/openobserve
     (encrypted in SQLite + mirrored to Swarm secrets; existing values preserved)
   - Render OTel + Traefik dynamic configs in-process; ship as Docker configs
@@ -40,8 +43,9 @@ Idempotent: re-running reconciles, never destroys existing state.`,
 
 func init() {
 	clusterUpCmd.Flags().String("domain", "", "base domain for the cluster (e.g. example.com)")
-	clusterUpCmd.Flags().String("cert", "", "path to TLS certificate (PEM)")
-	clusterUpCmd.Flags().String("key", "", "path to TLS private key (PEM)")
+	clusterUpCmd.Flags().String("acme-email", "", "Let's Encrypt account email — Traefik issues + renews certs via HTTP-01")
+	clusterUpCmd.Flags().String("cert", "", "path to TLS certificate (PEM) — alternative to --acme-email")
+	clusterUpCmd.Flags().String("key", "", "path to TLS private key (PEM) — alternative to --acme-email")
 	clusterUpCmd.Flags().String("openobserve-email", "", "OpenObserve admin email (becomes admin login)")
 	clusterUpCmd.Flags().String("traefik-admin-user", "admin", "username for the Traefik dashboard basic-auth")
 
@@ -79,6 +83,7 @@ func runClusterUp(cmd *cobra.Command, _ []string) error {
 
 	in := cluster.UpInput{}
 	in.Domain, _ = cmd.Flags().GetString("domain")
+	in.ACMEEmail, _ = cmd.Flags().GetString("acme-email")
 	in.CertPath, _ = cmd.Flags().GetString("cert")
 	in.KeyPath, _ = cmd.Flags().GetString("key")
 	in.OpenObserveAdminEmail, _ = cmd.Flags().GetString("openobserve-email")

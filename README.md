@@ -107,7 +107,9 @@ poor-man-stack/
 On the manager node:
 - Docker Engine 20.10+ installed (`docker --version`).
 - Swarm initialised (`docker swarm init --advertise-addr <ip>`). pmcluster intentionally does NOT init Swarm — that decision belongs to the operator.
-- A TLS certificate + key (file paths, any CA — internal, purchased, or wildcard).
+- TLS: pick one
+  - **Let's Encrypt (recommended for new clusters):** point `*.<your-domain>` at the manager's public IP, ensure port 80 is reachable. Pmcluster + Traefik handle issuance and renewal.
+  - **Operator-supplied cert + key:** any CA, including a wildcard from your existing internal/purchased PKI.
 
 ### 1. Install pmcluster
 
@@ -132,6 +134,13 @@ sudo install -m 0755 bin/pmcluster /usr/local/bin/
 ```bash
 pmcluster init                          # creates ~/.pmcluster, prints admin token
 
+# Let's Encrypt (recommended)
+pmcluster cluster up \
+  --domain=example.com \
+  --acme-email=ops@example.com \
+  --openobserve-email=admin@example.com
+
+# OR operator-supplied cert
 pmcluster cluster up \
   --domain=example.com \
   --cert=/path/to/cert.pem \
@@ -144,7 +153,7 @@ pmcluster cluster up \
 It will:
 1. Preflight (Docker reachable, Swarm active, this node is a manager)
 2. Create the `traefik-net` and `monitoring-net` overlay networks
-3. Load the cert/key into Swarm secrets
+3. Configure TLS — either wire ACME into Traefik (HTTP-01 via the `:80` entrypoint) or load the operator's cert/key into Swarm secrets
 4. Generate random bootstrap passwords for Traefik / Portainer / OpenObserve, store encrypted in SQLite, mirror to Swarm secrets
 5. Render the OTel + Traefik dynamic configs in-process and create them as Docker configs (Swarm replicates to every node)
 6. Deploy the `infra`, `observability`, and `backup` stacks via `docker stack deploy`
@@ -339,7 +348,9 @@ OpenObserve alone needs ~512 MB RAM at idle. On a manager with less than 4 GB it
 
 ## TLS Certificates & Renewal
 
-Certificates are loaded from Swarm secrets named `cert` and `key`. To rotate:
+**Let's Encrypt mode (`--acme-email`):** Traefik handles issuance and renewal automatically. Certs are stored in the `infra_traefik_acme` Docker volume on the manager. Nothing to rotate manually.
+
+**Operator-supplied mode (`--cert`/`--key`):** certificates live in Swarm secrets `cert` and `key`. To rotate:
 
 ```bash
 docker secret rm cert key
@@ -350,8 +361,6 @@ pmcluster cluster up \
   --openobserve-email=admin@example.com   # everything else preserved
 docker service update --force infra_traefik
 ```
-
-Automatic Let's Encrypt support can be added later by extending the embedded Traefik config in `pmcluster/internal/cluster/embeds/infra-stack.yml`.
 
 ---
 

@@ -27,11 +27,23 @@ services:
       - "--metrics.otlp.addRoutersLabels=true"
       - "--metrics.otlp.addServicesLabels=true"
       - "--tracing.serviceName=traefik-proxy"
+      [[- if .ACMEEmail]]
+      # Let's Encrypt (HTTP-01 via the :80 entrypoint). Operator must
+      # ensure DNS resolves to this manager AND :80 is publicly reachable.
+      - "--certificatesresolvers.letsencrypt.acme.email=[[.ACMEEmail]]"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge=true"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+      - "--entrypoints.websecure.http.tls.certresolver=letsencrypt"
+      [[- end]]
     ports:
       - "80:80"
       - "443:443"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      [[- if .ACMEEmail]]
+      - traefik_acme:/letsencrypt
+      [[- end]]
     configs:
       - source: pmcluster_traefik_dynamic
         target: /etc/traefik/dynamic/conf.yml
@@ -71,11 +83,16 @@ services:
         - "traefik.http.routers.traefik.rule=Host(`traefik.${DOMAIN}`) && (PathPrefix(`/api`) || PathPrefix(`/dashboard`))"
         - "traefik.http.routers.traefik.entrypoints=websecure"
         - "traefik.http.routers.traefik.tls=true"
+        [[- if .ACMEEmail]]
+        - "traefik.http.routers.traefik.tls.certresolver=letsencrypt"
+        [[- end]]
         - "traefik.http.routers.traefik.middlewares=admin-auth@file"
     secrets:
       - admin_credentials
+      [[- if not .ACMEEmail]]
       - cert
       - key
+      [[- end]]
 
   # Portainer Management
   portainer:
@@ -102,9 +119,10 @@ services:
         - "traefik.http.routers.portainer.rule=Host(`portainer.${DOMAIN}`)"
         - "traefik.http.routers.portainer.entrypoints=websecure"
         - "traefik.http.routers.portainer.tls=true"
+        [[- if .ACMEEmail]]
+        - "traefik.http.routers.portainer.tls.certresolver=letsencrypt"
+        [[- end]]
         - "traefik.http.services.portainer.loadbalancer.server.port=9000"
-        # Apply the SAME middleware defined in the Traefik service
-        # - "traefik.http.routers.portainer.middlewares=admin-auth@file"
     logging:
       driver: "json-file"
       options:
@@ -115,6 +133,9 @@ services:
 
 volumes:
   portainer_data:
+  [[- if .ACMEEmail]]
+  traefik_acme:
+  [[- end]]
 
 networks:
   traefik-net:
@@ -127,10 +148,12 @@ secrets:
     external: true
   portainer_admin_password:
     external: true
+  [[- if not .ACMEEmail]]
   cert:
     external: true
   key:
     external: true
+  [[- end]]
 
 # Docker config (replicated to every node by Swarm), created+managed by
 # pmcluster cluster up. Replaces the bind-mounted ./traefik-dynamic.yml

@@ -11,9 +11,13 @@ import (
 )
 
 type UpInput struct {
-	Domain                string
+	Domain string
+	// Either CertPath+KeyPath OR ACMEEmail must be set; mutually exclusive.
+	// CertPath/KeyPath: operator-provided PEM files loaded into Swarm secrets.
+	// ACMEEmail: Traefik issues + renews via Let's Encrypt HTTP-01.
 	CertPath              string
 	KeyPath               string
+	ACMEEmail             string
 	TraefikAdminUser      string // defaults to "admin"
 	OpenObserveAdminEmail string
 }
@@ -63,17 +67,21 @@ func Up(ctx context.Context, deps UpDeps, in UpInput) (*UpResult, error) {
 	}
 	res.NewNetworks = created
 
-	step("Loading TLS cert/key into Swarm secrets")
-	for _, t := range []struct{ name, path string }{
-		{"cert", in.CertPath},
-		{"key", in.KeyPath},
-	} {
-		isNew, err := EnsureSecretFromFile(ctx, deps.Docker, t.name, t.path)
-		if err != nil {
-			return res, fmt.Errorf("ensure secret %s from %s: %w", t.name, t.path, err)
-		}
-		if isNew {
-			res.NewSecrets = append(res.NewSecrets, t.name)
+	if in.ACMEEmail != "" {
+		step("TLS via Let's Encrypt (Traefik HTTP-01) — port 80 must be reachable from the internet")
+	} else {
+		step("Loading TLS cert/key into Swarm secrets")
+		for _, t := range []struct{ name, path string }{
+			{"cert", in.CertPath},
+			{"key", in.KeyPath},
+		} {
+			isNew, err := EnsureSecretFromFile(ctx, deps.Docker, t.name, t.path)
+			if err != nil {
+				return res, fmt.Errorf("ensure secret %s from %s: %w", t.name, t.path, err)
+			}
+			if isNew {
+				res.NewSecrets = append(res.NewSecrets, t.name)
+			}
 		}
 	}
 
@@ -118,6 +126,7 @@ func Up(ctx context.Context, deps UpDeps, in UpInput) (*UpResult, error) {
 		Domain:                   in.Domain,
 		OpenObserveAdminEmail:    openobsCred.Username,
 		OpenObserveAdminPassword: openobsCred.Password,
+		ACMEEmail:                in.ACMEEmail,
 	}
 
 	otelYAML, err := RenderOTelCollectorConfig(render)
@@ -161,14 +170,19 @@ func validateUpInput(in UpInput) error {
 	if in.Domain == "" {
 		return fmt.Errorf("--domain is required")
 	}
-	if in.CertPath == "" {
-		return fmt.Errorf("--cert is required (path to TLS certificate)")
-	}
-	if in.KeyPath == "" {
-		return fmt.Errorf("--key is required (path to TLS private key)")
-	}
 	if in.OpenObserveAdminEmail == "" {
 		return fmt.Errorf("--openobserve-email is required (used as OpenObserve admin login)")
+	}
+	hasBYOTLS := in.CertPath != "" || in.KeyPath != ""
+	hasACME := in.ACMEEmail != ""
+	if hasBYOTLS && hasACME {
+		return fmt.Errorf("choose ONE TLS mode: --acme-email (Let's Encrypt) OR --cert + --key (operator-supplied)")
+	}
+	if !hasBYOTLS && !hasACME {
+		return fmt.Errorf("a TLS mode is required: --acme-email <you@host> (Let's Encrypt) OR --cert <pem> --key <pem>")
+	}
+	if hasBYOTLS && (in.CertPath == "" || in.KeyPath == "") {
+		return fmt.Errorf("--cert and --key must both be provided")
 	}
 	return nil
 }

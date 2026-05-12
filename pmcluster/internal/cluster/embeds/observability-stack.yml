@@ -22,6 +22,9 @@ services:
         - "traefik.http.services.openobserve.loadbalancer.server.port=5080"
         - "traefik.http.routers.openobserve.entrypoints=websecure"
         - "traefik.http.routers.openobserve.tls=true"
+        [[- if .ACMEEmail]]
+        - "traefik.http.routers.openobserve.tls.certresolver=letsencrypt"
+        [[- end]]
         - "traefik.swarm.network=traefik-net"
     environment:
       - ZO_DATA_DIR=/data
