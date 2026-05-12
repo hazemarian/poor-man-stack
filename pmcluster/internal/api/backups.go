@@ -35,14 +35,14 @@ func (h *BackupsHandler) MountStackScoped(r chi.Router) {
 }
 
 type backupDTO struct {
-	ID            int64  `json:"id"`
-	Status        string `json:"status"`
-	StackName     string `json:"stack_name,omitempty"`
-	Revision      int64  `json:"revision,omitempty"`
-	ArchivePaths  []string `json:"archive_paths,omitempty"`
-	ErrorMessage  string `json:"error_message,omitempty"`
-	StartedAt     int64  `json:"started_at"`
-	FinishedAt    int64  `json:"finished_at,omitempty"`
+	ID           int64    `json:"id"`
+	Status       string   `json:"status"`
+	StackName    string   `json:"stack_name,omitempty"`
+	Revision     int64    `json:"revision,omitempty"`
+	ArchivePaths []string `json:"archive_paths,omitempty"`
+	ErrorMessage string   `json:"error_message,omitempty"`
+	StartedAt    int64    `json:"started_at"`
+	FinishedAt   int64    `json:"finished_at,omitempty"`
 }
 
 func toDTO(b *store.Backup) backupDTO {

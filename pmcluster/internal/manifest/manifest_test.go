@@ -114,14 +114,14 @@ func TestTranslate_DonationCampaignSmoke(t *testing.T) {
 
 	// Structural assertions covering the most important translator outputs.
 	mustContain(`version: "3.9"`)
-	mustContain(`donation-campaign-net`)         // private overlay
-	mustContain(`traefik-net`)                    // exposed services join it
-	mustContain(`monitoring-net`)                 // exposed services join it
-	mustContain(`external: true`)                 // external networks/secrets
-	mustContain(`donation_campaign_db_password`)  // secret declaration
-	mustContain(`db_data`)                        // local volume
-	mustContain(`pg_isready`)                     // shorthand expansion
-	mustContain(`wget -q --spider`)               // http healthcheck shorthand
+	mustContain(`donation-campaign-net`)             // private overlay
+	mustContain(`traefik-net`)                       // exposed services join it
+	mustContain(`monitoring-net`)                    // exposed services join it
+	mustContain(`external: true`)                    // external networks/secrets
+	mustContain(`donation_campaign_db_password`)     // secret declaration
+	mustContain(`db_data`)                           // local volume
+	mustContain(`pg_isready`)                        // shorthand expansion
+	mustContain(`wget -q --spider`)                  // http healthcheck shorthand
 	mustContain(`api.donation-campaign.example.com`) // interpolated host
 	mustContain(`traefik.http.routers.donation-campaign-api.rule`)
 	mustContain(`condition: none`)                // run_once → restart none

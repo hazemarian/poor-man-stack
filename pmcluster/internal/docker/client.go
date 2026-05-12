@@ -9,10 +9,10 @@ import (
 	"errors"
 	"fmt"
 
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/client"
-	"github.com/docker/docker/errdefs"
 )
 
 // Client is the contract pmcluster needs from a Docker daemon — a subset
@@ -156,7 +156,7 @@ func (r *realClient) NetworkExists(ctx context.Context, name string) (bool, erro
 	if err == nil {
 		return true, nil
 	}
-	if errdefs.IsNotFound(err) || isNotFoundString(err) {
+	if cerrdefs.IsNotFound(err) || isNotFoundString(err) {
 		return false, nil
 	}
 	return false, fmt.Errorf("network inspect %s: %w", name, err)
@@ -182,7 +182,7 @@ func (r *realClient) SecretExists(ctx context.Context, name string) (bool, error
 	if err == nil {
 		return true, nil
 	}
-	if errdefs.IsNotFound(err) || isNotFoundString(err) {
+	if cerrdefs.IsNotFound(err) || isNotFoundString(err) {
 		return false, nil
 	}
 	return false, fmt.Errorf("secret inspect %s: %w", name, err)
@@ -208,7 +208,7 @@ func (r *realClient) ConfigExists(ctx context.Context, name string) (bool, error
 	if err == nil {
 		return true, nil
 	}
-	if errdefs.IsNotFound(err) || isNotFoundString(err) {
+	if cerrdefs.IsNotFound(err) || isNotFoundString(err) {
 		return false, nil
 	}
 	return false, fmt.Errorf("config inspect %s: %w", name, err)
@@ -234,7 +234,7 @@ func idempotentRemove(err error, kind, name string) error {
 	if err == nil {
 		return nil
 	}
-	if errdefs.IsNotFound(err) || isNotFoundString(err) {
+	if cerrdefs.IsNotFound(err) || isNotFoundString(err) {
 		return nil
 	}
 	return fmt.Errorf("%s remove %s: %w", kind, name, err)

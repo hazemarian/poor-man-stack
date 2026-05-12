@@ -1,8 +1,9 @@
 // Package webhook implements the HMAC-verified deploy webhook receiver.
 //
 // Endpoint: POST /webhook/{source}
-//   Body:     deploy.Payload as JSON
-//   Header:   X-Pmcluster-Signature: sha256=<hex>
+//
+//	Body:     deploy.Payload as JSON
+//	Header:   X-Pmcluster-Signature: sha256=<hex>
 //
 // The signature is HMAC-SHA256 over the raw request body with the shared
 // secret stored under the named source. Constant-time comparison on the

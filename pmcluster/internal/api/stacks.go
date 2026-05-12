@@ -166,4 +166,3 @@ func stackJSON(s *store.Stack) map[string]any {
 		"updated_at":       s.UpdatedAt,
 	}
 }
-

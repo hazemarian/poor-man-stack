@@ -13,13 +13,13 @@ import (
 //
 // PasswordCiphertext is opaque — callers decrypt via the credentials package.
 type ManagedCredential struct {
-	Name              string
-	Kind              string
-	Username          string
+	Name               string
+	Kind               string
+	Username           string
 	PasswordCiphertext []byte
-	SwarmSecretName   string
-	CreatedAt         int64
-	RotatedAt         sql.NullInt64
+	SwarmSecretName    string
+	CreatedAt          int64
+	RotatedAt          sql.NullInt64
 }
 
 // ErrCredentialNotFound is returned by GetCredential when no row matches.

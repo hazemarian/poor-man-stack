@@ -16,17 +16,17 @@ func ClusterInfoHandler(d docker.Client) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"node_name":       info.Name,
-			"server_version":  info.ServerVersion,
-			"os":              info.OperatingSystem,
-			"arch":            info.Architecture,
-			"cpus":            info.NCPU,
-			"memory_bytes":    info.MemTotal,
+			"node_name":      info.Name,
+			"server_version": info.ServerVersion,
+			"os":             info.OperatingSystem,
+			"arch":           info.Architecture,
+			"cpus":           info.NCPU,
+			"memory_bytes":   info.MemTotal,
 			"swarm": map[string]any{
-				"state":              info.SwarmLocalNodeState,
-				"control_available":  info.SwarmControlAvailable,
-				"managers":           info.SwarmManagers,
-				"nodes":              info.SwarmNodes,
+				"state":             info.SwarmLocalNodeState,
+				"control_available": info.SwarmControlAvailable,
+				"managers":          info.SwarmManagers,
+				"nodes":             info.SwarmNodes,
 			},
 		})
 	}

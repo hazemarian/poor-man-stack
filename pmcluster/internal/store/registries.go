@@ -14,10 +14,10 @@ import (
 //
 // PasswordCiphertext is AES-GCM-encrypted via the credentials.Cipher.
 type Registry struct {
-	Host                string
-	Username            string
-	PasswordCiphertext  []byte
-	CreatedAt           int64
+	Host               string
+	Username           string
+	PasswordCiphertext []byte
+	CreatedAt          int64
 }
 
 // ErrRegistryNotFound is returned by GetRegistry when no row matches.

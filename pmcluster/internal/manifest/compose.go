@@ -40,12 +40,12 @@ type composeHealthcheck struct {
 }
 
 type composeDeploy struct {
-	Mode          string                 `json:"mode,omitempty"`
-	Replicas      *int                   `json:"replicas,omitempty"`
-	Labels        map[string]string      `json:"labels,omitempty"`
-	Placement     *composePlacement      `json:"placement,omitempty"`
-	RestartPolicy *composeRestartPolicy  `json:"restart_policy,omitempty"`
-	UpdateConfig  *composeUpdateConfig   `json:"update_config,omitempty"`
+	Mode          string                `json:"mode,omitempty"`
+	Replicas      *int                  `json:"replicas,omitempty"`
+	Labels        map[string]string     `json:"labels,omitempty"`
+	Placement     *composePlacement     `json:"placement,omitempty"`
+	RestartPolicy *composeRestartPolicy `json:"restart_policy,omitempty"`
+	UpdateConfig  *composeUpdateConfig  `json:"update_config,omitempty"`
 }
 
 type composePlacement struct {

@@ -13,11 +13,11 @@ import (
 // credentials.Cipher); pmcluster recomputes HMAC over each request body
 // to verify the signature header.
 type WebhookSource struct {
-	Source            string
-	SecretCiphertext  []byte
-	Description       sql.NullString
-	CreatedAt         int64
-	LastUsedAt        sql.NullInt64
+	Source           string
+	SecretCiphertext []byte
+	Description      sql.NullString
+	CreatedAt        int64
+	LastUsedAt       sql.NullInt64
 }
 
 // ErrWebhookSourceNotFound is returned by GetWebhookSource when no row matches.

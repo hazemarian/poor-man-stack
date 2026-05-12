@@ -88,8 +88,8 @@ func (f *fakeClient) NetworkRemove(_ context.Context, name string) error {
 	return nil
 }
 
-func (f *fakeClient) NodeList(_ context.Context) ([]Node, error)         { return nil, nil }
-func (f *fakeClient) JoinTokens(_ context.Context) (JoinTokens, error)   { return JoinTokens{}, nil }
+func (f *fakeClient) NodeList(_ context.Context) ([]Node, error)       { return nil, nil }
+func (f *fakeClient) JoinTokens(_ context.Context) (JoinTokens, error) { return JoinTokens{}, nil }
 
 func (f *fakeClient) Close() error {
 	f.closed = true

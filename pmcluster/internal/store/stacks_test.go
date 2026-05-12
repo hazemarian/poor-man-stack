@@ -119,7 +119,7 @@ func TestRecordDeploy_SecondRevision(t *testing.T) {
 
 // TestRecordDeploy_RepoURLPreservedOnEmptyUpdate verifies that passing an
 // empty repoURL on a subsequent deploy preserves the existing value via the
-// COALESCE(NULLIF(?, ''), repo_url) clause.
+// COALESCE(NULLIF(?, ”), repo_url) clause.
 func TestRecordDeploy_RepoURLPreservedOnEmptyUpdate(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

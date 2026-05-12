@@ -1,8 +1,8 @@
 // Package manifest is the DSL pipeline:
-//   1. Parse       — YAML → *dsl.App, strict (unknown keys = error)
-//   2. Interpolate — ${app} / ${env} / ${version} / ${registry} / ${env:VAR}
-//   3. Validate    — semantic checks (image required, expose.port valid, …)
-//   4. Translate   — *dsl.App → compose YAML
+//  1. Parse       — YAML → *dsl.App, strict (unknown keys = error)
+//  2. Interpolate — ${app} / ${env} / ${version} / ${registry} / ${env:VAR}
+//  3. Validate    — semantic checks (image required, expose.port valid, …)
+//  4. Translate   — *dsl.App → compose YAML
 package manifest
 
 import (

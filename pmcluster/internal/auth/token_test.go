@@ -75,9 +75,9 @@ func TestHashToken_EmptyRejected(t *testing.T) {
 
 func TestExtractBearer(t *testing.T) {
 	cases := []struct {
-		header     string
-		wantToken  string
-		wantOK     bool
+		header    string
+		wantToken string
+		wantOK    bool
 	}{
 		{"", "", false},
 		{"Bearer abc", "abc", true},

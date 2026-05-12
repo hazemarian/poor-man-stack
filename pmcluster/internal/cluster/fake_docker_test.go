@@ -141,8 +141,10 @@ func (f *fakeDocker) NetworkRemove(_ context.Context, name string) error {
 	return nil
 }
 
-func (f *fakeDocker) NodeList(_ context.Context) ([]docker.Node, error)       { return nil, nil }
-func (f *fakeDocker) JoinTokens(_ context.Context) (docker.JoinTokens, error) { return docker.JoinTokens{}, nil }
+func (f *fakeDocker) NodeList(_ context.Context) ([]docker.Node, error) { return nil, nil }
+func (f *fakeDocker) JoinTokens(_ context.Context) (docker.JoinTokens, error) {
+	return docker.JoinTokens{}, nil
+}
 
 func (f *fakeDocker) Close() error { return nil }
 

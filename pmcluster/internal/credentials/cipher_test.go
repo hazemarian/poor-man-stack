@@ -76,7 +76,10 @@ func TestOpen_ReadsExistingKeyFile(t *testing.T) {
 // TestOpen_RejectsWrongKeyLength verifies that Open returns an error when the
 // key file exists but has the wrong byte count.
 func TestOpen_RejectsWrongKeyLength(t *testing.T) {
-	cases := []struct{ name string; size int }{
+	cases := []struct {
+		name string
+		size int
+	}{
 		{"too short", 16},
 		{"too long", 64},
 		{"empty", 0},

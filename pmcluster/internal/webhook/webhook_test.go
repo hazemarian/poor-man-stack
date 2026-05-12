@@ -27,10 +27,10 @@ import (
 // recordingDeployer records every DeployStack call and can optionally inject
 // an error. It implements cluster.StackDeployer.
 type recordingDeployer struct {
-	deployed   []deployRecord
-	deployErr  error
-	removed    []string
-	updated    []string
+	deployed  []deployRecord
+	deployErr error
+	removed   []string
+	updated   []string
 }
 
 type deployRecord struct {

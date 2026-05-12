@@ -15,7 +15,7 @@ import (
 // recordingDeployer is a test-local implementation of cluster.StackDeployer.
 // It records every (stackName, composeYAML) call and returns a configurable error.
 type recordingDeployer struct {
-	calls    []deployCall
+	calls     []deployCall
 	returnErr error
 }
 
