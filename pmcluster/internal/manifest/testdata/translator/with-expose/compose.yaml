@@ -15,6 +15,7 @@ services:
         traefik.docker.network: traefik-net
         traefik.enable: "true"
         traefik.http.routers.web-app-api.entrypoints: websecure
+        traefik.http.routers.web-app-api.middlewares: cors-default@file
         traefik.http.routers.web-app-api.rule: Host(`api.web-app.example.com`)
         traefik.http.routers.web-app-api.tls: "true"
         traefik.http.services.web-app-api.loadbalancer.server.port: "8080"

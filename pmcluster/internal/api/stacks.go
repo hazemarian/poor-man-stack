@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -91,9 +92,36 @@ func (h *StacksHandler) show(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"stack":     stackJSON(st),
-		"revisions": revsJSON,
+		"stack":       stackJSON(st),
+		"revisions":   revsJSON,
+		"last_backup": lastBackupJSON(r.Context(), h.Store, name),
 	})
+}
+
+// lastBackupJSON returns the most-recent backup row for the stack in a
+// shape suitable for JSON serialization, or nil if there are no backups.
+// Errors are folded to nil so a hiccup in the audit table doesn't fail
+// the stack-show endpoint.
+func lastBackupJSON(ctx context.Context, st *store.Store, name string) map[string]any {
+	backups, err := st.ListBackupsForStack(ctx, name)
+	if err != nil || len(backups) == 0 {
+		return nil
+	}
+	b := backups[0]
+	out := map[string]any{
+		"status":     b.Status,
+		"started_at": b.StartedAt,
+	}
+	if b.FinishedAt.Valid {
+		out["finished_at"] = b.FinishedAt.Int64
+	}
+	if b.Revision.Valid {
+		out["revision"] = b.Revision.Int64
+	}
+	if b.ErrorMessage != "" {
+		out["error_message"] = b.ErrorMessage
+	}
+	return out
 }
 
 // showRevision returns the full source + rendered YAML for one revision.

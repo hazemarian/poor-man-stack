@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/hazemarian/poor-man-stack/pmcluster/internal/backup"
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/store"
 )
 
@@ -123,6 +124,7 @@ func (h *BackupsHandler) create(w http.ResponseWriter, r *http.Request) {
 	paths, err := h.Trigger.Trigger(r.Context())
 	if err != nil {
 		_ = h.Store.FinishBackup(r.Context(), id, "failed", strings.Join(paths, ","), err.Error())
+		backup.RecordOutcome(r.Context(), backup.KindOnDemand, backup.StatusFailed)
 		writeBackupErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -130,6 +132,7 @@ func (h *BackupsHandler) create(w http.ResponseWriter, r *http.Request) {
 		writeBackupErr(w, http.StatusInternalServerError, "record finish: "+err.Error())
 		return
 	}
+	backup.RecordOutcome(r.Context(), backup.KindOnDemand, backup.StatusSucceeded)
 	writeBackupJSON(w, http.StatusOK, map[string]any{
 		"id":            id,
 		"status":        "succeeded",

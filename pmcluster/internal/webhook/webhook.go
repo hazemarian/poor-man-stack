@@ -23,13 +23,39 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/credentials"
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/deploy"
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/store"
 )
+
+// instruments is lazily-built so importing this package doesn't bind to
+// the noop MeterProvider before telemetry.Init runs.
+var (
+	instrOnce       sync.Once
+	webhookRequests metric.Int64Counter
+)
+
+func webhookCounter() metric.Int64Counter {
+	instrOnce.Do(func() {
+		meter := otel.Meter("github.com/hazemarian/poor-man-stack/pmcluster/internal/webhook")
+		var err error
+		webhookRequests, err = meter.Int64Counter(
+			"pmcluster.webhook.requests.total",
+			metric.WithDescription("Webhook receiver outcomes. Status is one of accepted|unauthorized|bad_request|server_error — never per-failure-mode to preserve the 401 indistinguishability invariant."),
+		)
+		if err != nil {
+			webhookRequests, _ = otel.Meter("noop").Int64Counter("noop")
+		}
+	})
+	return webhookRequests
+}
 
 // SignatureHeader format: "sha256=<lowercase-hex>". Matches GitHub/GitLab
 // so off-the-shelf CI integrations work.
@@ -58,23 +84,39 @@ func (h *Handler) Mount(r chi.Router) {
 //   - 502: docker stack deploy returned an error.
 func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 	source := chi.URLParam(r, "source")
+	// record() centralises the metric so every return path ticks once
+	// with a coarse status. Per-failure detail stays out — exposing it
+	// would defeat the "all 401s identical" invariant.
+	record := func(status string) {
+		webhookCounter().Add(r.Context(), 1,
+			metric.WithAttributes(
+				attribute.String("source", source),
+				attribute.String("status", status),
+			),
+		)
+	}
+
 	if source == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "source required"})
+		record("bad_request")
 		return
 	}
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, MaxBodyBytes+1))
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "read body: " + err.Error()})
+		record("bad_request")
 		return
 	}
 	if len(body) > MaxBodyBytes {
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "body too large"})
+		record("bad_request")
 		return
 	}
 
 	if err := h.verifyHMAC(r.Context(), source, body, r.Header.Get(SignatureHeader)); err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
+		record("unauthorized")
 		return
 	}
 
@@ -86,12 +128,14 @@ func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 	var p deploy.Payload
 	if err := json.Unmarshal(body, &p); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid JSON: " + err.Error()})
+		record("bad_request")
 		return
 	}
 
 	res, err := h.Service.Deploy(r.Context(), p)
 	if err != nil {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+		record("server_error")
 		return
 	}
 
@@ -99,6 +143,7 @@ func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 		"stack":    res.StackName,
 		"revision": res.Revision,
 	})
+	record("accepted")
 }
 
 // verifyHMAC returns a non-nil error for ANY failure mode. Caller maps

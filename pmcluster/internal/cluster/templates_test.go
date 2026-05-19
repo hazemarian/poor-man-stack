@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"encoding/base64"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -239,6 +240,108 @@ func TestLoadComposeFile_InfraACMEMode(t *testing.T) {
 			t.Errorf("ACME-mode infra stack should NOT contain %q", unwanted)
 		}
 	}
+}
+
+// TestCORSOriginRegex_MatchesSubdomains exercises the regex against a set
+// of origin strings to confirm only same-domain HTTPS origins match.
+func TestCORSOriginRegex_MatchesSubdomains(t *testing.T) {
+	pat := CORSOriginRegex("example.com")
+	re := mustCompile(t, pat)
+
+	allow := []string{
+		"https://example.com",
+		"https://traefik.example.com",
+		"https://api.foo.example.com",
+		"https://a.b.c.example.com",
+	}
+	for _, o := range allow {
+		if !re.MatchString(o) {
+			t.Errorf("expected match for %q with pattern %s", o, pat)
+		}
+	}
+
+	deny := []string{
+		"http://example.com",           // wrong scheme
+		"https://example.com:8080",     // port not allowed
+		"https://evil.com",             // different domain
+		"https://example.com.evil.com", // suffix-attack
+		"https://EXAMPLE.COM",          // case mismatch (Traefik regex is case-sensitive; Origin is lowercase per RFC 6454)
+		"https://example.com/",         // trailing slash means a path component is in the Origin
+		"https://-bad.example.com",     // leading hyphen
+		"https://foo..example.com",     // empty label
+	}
+	for _, o := range deny {
+		if re.MatchString(o) {
+			t.Errorf("expected NO match for %q with pattern %s", o, pat)
+		}
+	}
+}
+
+// TestCORSOriginRegex_RejectsBadDomain falls back to a never-match pattern
+// when the input doesn't look like a host.
+func TestCORSOriginRegex_RejectsBadDomain(t *testing.T) {
+	for _, bad := range []string{
+		"", "no-dot", "http://example.com",
+		"example.com/path", "example.com:80",
+		".example.com", "example..com",
+	} {
+		got := CORSOriginRegex(bad)
+		if got != `^$` {
+			t.Errorf("CORSOriginRegex(%q) = %q, want fallback %q", bad, got, `^$`)
+		}
+	}
+}
+
+// TestRenderTraefikDynamic_CORSWired verifies the rendered dynamic config
+// contains the cors-default middleware (with the per-domain regex) and
+// that the pmcluster router includes it in its middlewares chain.
+func TestRenderTraefikDynamic_CORSWired(t *testing.T) {
+	in := RenderInput{Domain: "example.com"}
+	data, err := RenderTraefikDynamic(in)
+	if err != nil {
+		t.Fatalf("RenderTraefikDynamic: %v", err)
+	}
+	body := string(data)
+
+	if !strings.Contains(body, "cors-default:") {
+		t.Errorf("rendered config missing cors-default middleware:\n%s", body)
+	}
+	wantRegex := CORSOriginRegex("example.com")
+	if !strings.Contains(body, wantRegex) {
+		t.Errorf("rendered config missing expected origin regex %q:\n%s", wantRegex, body)
+	}
+	if !strings.Contains(body, "- cors-default") {
+		t.Errorf("rendered config missing cors-default in router middlewares list:\n%s", body)
+	}
+	if !strings.Contains(body, "accessControlAllowCredentials: true") {
+		t.Errorf("rendered config missing accessControlAllowCredentials: true:\n%s", body)
+	}
+}
+
+// TestRenderTraefikDynamic_CORSOverride verifies that an explicit
+// CORSOriginRegex on RenderInput takes precedence over the derived one.
+func TestRenderTraefikDynamic_CORSOverride(t *testing.T) {
+	in := RenderInput{Domain: "example.com", CORSOriginRegex: "^https://only.this.com$"}
+	data, err := RenderTraefikDynamic(in)
+	if err != nil {
+		t.Fatalf("RenderTraefikDynamic: %v", err)
+	}
+	body := string(data)
+	if !strings.Contains(body, "^https://only.this.com$") {
+		t.Errorf("override regex not present:\n%s", body)
+	}
+	if strings.Contains(body, CORSOriginRegex("example.com")) {
+		t.Errorf("derived regex should not appear when override is set")
+	}
+}
+
+func mustCompile(t *testing.T, pat string) *regexp.Regexp {
+	t.Helper()
+	re, err := regexp.Compile(pat)
+	if err != nil {
+		t.Fatalf("compile %q: %v", pat, err)
+	}
+	return re
 }
 
 // TestLoadComposeFile_InfraBYOMode verifies the legacy operator-cert path.

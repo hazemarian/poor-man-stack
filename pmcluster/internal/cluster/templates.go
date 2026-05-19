@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io/fs"
+	"regexp"
 	"strings"
 	"text/template"
 )
@@ -39,6 +40,11 @@ type RenderInput struct {
 	// ACMEEmail enables Let's Encrypt automation when non-empty. Mutually
 	// exclusive with operator-supplied cert/key (see cluster.UpInput).
 	ACMEEmail string
+
+	// CORSOriginRegex is the Traefik accessControlAllowOriginListRegex
+	// pattern wired into the cors-default middleware. When empty,
+	// RenderTraefikDynamic derives it from Domain via CORSOriginRegex().
+	CORSOriginRegex string
 }
 
 // LoadComposeFile renders an embedded stack: text/template first (for
@@ -222,11 +228,38 @@ http:
     admin-auth:
       basicAuth:
         usersFile: /run/secrets/admin_credentials
+    # cors-default: applied to every managed router (pmcluster, traefik
+    # dashboard, portainer, openobserve) AND every exposed app router
+    # emitted by the manifest translator. Origins are restricted to
+    # https://<any-subdomain>.<cluster-domain> + https://<cluster-domain>
+    # via a regex derived from cluster up --domain. Echoed origins keep
+    # accessControlAllowCredentials valid (spec forbids "*" + credentials).
+    cors-default:
+      headers:
+        accessControlAllowOriginListRegex:
+          - "[[.CORSOriginRegex]]"
+        accessControlAllowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        accessControlAllowHeaders:
+          - Content-Type
+          - Authorization
+          - X-Pmcluster-Signature
+          - X-Request-Id
+        accessControlAllowCredentials: true
+        accessControlMaxAge: 600
+        addVaryHeader: true
   routers:
     pmcluster:
       rule: "Host(` + "`" + `pmcluster.[[.Domain]]` + "`" + `)"
       entrypoints: [websecure]
       service: pmcluster
+      middlewares:
+        - cors-default
       tls:
         [[- if .ACMEEmail]]
         certResolver: letsencrypt
@@ -265,6 +298,9 @@ func RenderTraefikDynamic(in RenderInput) ([]byte, error) {
 	if in.Domain == "" {
 		return nil, fmt.Errorf("RenderTraefikDynamic: Domain is required")
 	}
+	if in.CORSOriginRegex == "" {
+		in.CORSOriginRegex = CORSOriginRegex(in.Domain)
+	}
 	tmpl, err := template.New("traefik-dynamic").Delims("[[", "]]").Parse(traefikDynamicTemplate)
 	if err != nil {
 		return nil, fmt.Errorf("parse traefik dynamic template: %w", err)
@@ -274,4 +310,26 @@ func RenderTraefikDynamic(in RenderInput) ([]byte, error) {
 		return nil, fmt.Errorf("execute traefik dynamic template: %w", err)
 	}
 	return out.Bytes(), nil
+}
+
+// validDomain matches a DNS host: dot-separated labels of letters,
+// digits, and hyphens (no scheme, no port, no path). Used so callers
+// can't smuggle regex metachars through Domain into the template.
+var validDomain = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$`)
+
+// CORSOriginRegex returns the Traefik origin-list regex that allows
+// https://<domain> and https://<any-subdomain>.<domain>. Falls back to
+// a never-match pattern when domain is empty or malformed so the
+// middleware never inadvertently opens up "*".
+func CORSOriginRegex(domain string) string {
+	if !validDomain.MatchString(domain) {
+		// Match nothing — callers should validate Domain upstream;
+		// this keeps the template render-safe in the worst case.
+		return `^$`
+	}
+	escaped := regexp.QuoteMeta(strings.ToLower(domain))
+	// Each subdomain label must start with an alphanumeric (no leading
+	// hyphen — RFC 1123) to avoid letting weird-but-not-quite-impossible
+	// origins through.
+	return `^https://([a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)*\.)?` + escaped + `$`
 }

@@ -202,12 +202,20 @@ func standardLabels(app *dsl.App, serviceName string) map[string]string {
 
 // addTraefikLabels scopes router/service names as <app>-<service> to
 // avoid collisions across apps.
+//
+// The cluster-wide cors-default middleware (defined in the Traefik
+// dynamic file provider by pmcluster cluster up) is attached by
+// default. Services that own CORS themselves opt out via
+// expose.cors_disabled: true.
 func addTraefikLabels(labels map[string]string, app *dsl.App, serviceName string, exp *dsl.Expose) {
 	scope := app.Name + "-" + serviceName
 	labels["traefik.enable"] = "true"
 	labels["traefik.http.routers."+scope+".rule"] = "Host(`" + exp.Host + "`)"
 	labels["traefik.http.routers."+scope+".entrypoints"] = "websecure"
 	labels["traefik.http.routers."+scope+".tls"] = "true"
+	if !exp.CORSDisabled {
+		labels["traefik.http.routers."+scope+".middlewares"] = "cors-default@file"
+	}
 	labels["traefik.http.services."+scope+".loadbalancer.server.port"] = fmt.Sprintf("%d", exp.Port)
 	labels["traefik.docker.network"] = traefikNet
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/api"
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/auth"
@@ -72,7 +73,11 @@ func New(d Deps) http.Handler {
 		}
 	})
 
-	return r
+	// otelhttp wraps the whole router so every request produces a span
+	// + http.server.* metrics keyed by route template (chi populates
+	// the route on the context, otelhttp picks it up via the
+	// http.route attribute it sets after the chi pattern matches).
+	return otelhttp.NewHandler(r, "pmcluster.http")
 }
 
 // Run starts the HTTP server on addr and blocks until ctx is cancelled,

@@ -11,12 +11,54 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/hazemarian/poor-man-stack/pmcluster/internal/backup"
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/cluster"
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/manifest"
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/store"
 )
+
+// Instruments are lazily-initialised so importing this package never
+// touches the global MeterProvider before telemetry.Init has had a
+// chance to register a real one (otherwise we'd cache the noop meter).
+var (
+	instrOnce        sync.Once
+	deploysTotal     metric.Int64Counter
+	deployDurationMs metric.Float64Histogram
+	deployTracer     trace.Tracer
+)
+
+func instruments() (metric.Int64Counter, metric.Float64Histogram, trace.Tracer) {
+	instrOnce.Do(func() {
+		meter := otel.Meter("github.com/hazemarian/poor-man-stack/pmcluster/internal/deploy")
+		var err error
+		deploysTotal, err = meter.Int64Counter(
+			"pmcluster.deploys.total",
+			metric.WithDescription("Total number of stack deploys, labelled by stack and status"),
+		)
+		if err != nil {
+			deploysTotal, _ = otel.Meter("noop").Int64Counter("noop")
+		}
+		deployDurationMs, err = meter.Float64Histogram(
+			"pmcluster.deploy.duration",
+			metric.WithUnit("ms"),
+			metric.WithDescription("Wall-clock duration of a stack deploy, labelled by stack and status"),
+		)
+		if err != nil {
+			deployDurationMs, _ = otel.Meter("noop").Float64Histogram("noop")
+		}
+		deployTracer = otel.Tracer("github.com/hazemarian/poor-man-stack/pmcluster/internal/deploy")
+	})
+	return deploysTotal, deployDurationMs, deployTracer
+}
 
 // BackupTrigger is implemented by internal/backup; abstracted so tests
 // can stub it without spinning up offen.
@@ -47,7 +89,35 @@ type Service struct {
 	Backup   BackupTrigger
 }
 
-func (s *Service) Deploy(ctx context.Context, p Payload) (*DeployResult, error) {
+func (s *Service) Deploy(ctx context.Context, p Payload) (res *DeployResult, retErr error) {
+	counter, hist, tracer := instruments()
+	ctx, span := tracer.Start(ctx, "pmcluster.deploy",
+		trace.WithSpanKind(trace.SpanKindInternal),
+	)
+	start := time.Now()
+	// stackName isn't known until after Parse; record what we can on
+	// the span/metrics from a deferred closure.
+	stackName := ""
+	defer func() {
+		status := "ok"
+		if retErr != nil {
+			status = "error"
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		attrs := metric.WithAttributes(
+			attribute.String("stack", stackName),
+			attribute.String("status", status),
+		)
+		counter.Add(ctx, 1, attrs)
+		hist.Record(ctx, float64(time.Since(start).Milliseconds()), attrs)
+		span.SetAttributes(
+			attribute.String("pmcluster.stack", stackName),
+			attribute.String("pmcluster.status", status),
+		)
+		span.End()
+	}()
+
 	if p.Manifest == "" {
 		return nil, fmt.Errorf("manifest: required")
 	}
@@ -62,6 +132,7 @@ func (s *Service) Deploy(ctx context.Context, p Payload) (*DeployResult, error) 
 	if p.Version != "" {
 		app.Version = p.Version
 	}
+	stackName = app.Name
 	if err := manifest.Interpolate(app); err != nil {
 		return nil, fmt.Errorf("interpolate: %w", err)
 	}
@@ -110,7 +181,33 @@ func (s *Service) Deploy(ctx context.Context, p Payload) (*DeployResult, error) 
 
 // Rollback re-applies a stored revision as a NEW revision so the audit
 // trail records both deploys. PayloadJSON carries a rollback_of marker.
-func (s *Service) Rollback(ctx context.Context, stackName string, sourceRevision int64) (*DeployResult, error) {
+func (s *Service) Rollback(ctx context.Context, stackName string, sourceRevision int64) (res *DeployResult, retErr error) {
+	counter, hist, tracer := instruments()
+	ctx, span := tracer.Start(ctx, "pmcluster.rollback",
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(
+			attribute.String("pmcluster.stack", stackName),
+			attribute.Int64("pmcluster.rollback_source_revision", sourceRevision),
+		),
+	)
+	start := time.Now()
+	defer func() {
+		status := "ok"
+		if retErr != nil {
+			status = "error"
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		attrs := metric.WithAttributes(
+			attribute.String("stack", stackName),
+			attribute.String("status", status),
+			attribute.String("op", "rollback"),
+		)
+		counter.Add(ctx, 1, attrs)
+		hist.Record(ctx, float64(time.Since(start).Milliseconds()), attrs)
+		span.End()
+	}()
+
 	src, err := s.Store.GetRevision(ctx, stackName, sourceRevision)
 	if err != nil {
 		return nil, err
@@ -155,12 +252,15 @@ func (s *Service) runPreDeployBackup(ctx context.Context, stackName string, revi
 	}
 	if s.Backup == nil {
 		_ = s.Store.FinishBackup(ctx, id, "failed", "", "no BackupTrigger configured (deploy.Service.Backup is nil)")
+		backup.RecordOutcome(ctx, backup.KindPreDeploy, backup.StatusFailed)
 		return
 	}
 	paths, err := s.Backup.Trigger(ctx)
 	if err != nil {
 		_ = s.Store.FinishBackup(ctx, id, "failed", strings.Join(paths, ","), err.Error())
+		backup.RecordOutcome(ctx, backup.KindPreDeploy, backup.StatusFailed)
 		return
 	}
 	_ = s.Store.FinishBackup(ctx, id, "succeeded", strings.Join(paths, ","), "")
+	backup.RecordOutcome(ctx, backup.KindPreDeploy, backup.StatusSucceeded)
 }

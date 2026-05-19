@@ -10,8 +10,67 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
+
+// Backup kinds passed to RecordOutcome so dashboards can distinguish
+// "ops triggered manually" from "deploy auto-triggered".
+const (
+	KindOnDemand  = "on_demand"
+	KindPreDeploy = "pre_deploy"
+)
+
+// Backup statuses — same values stored in the audit table.
+const (
+	StatusSucceeded = "succeeded"
+	StatusFailed    = "failed"
+)
+
+var (
+	instrOnce      sync.Once
+	backupsTotal   metric.Int64Counter
+	backupLastUnix metric.Int64Gauge
+)
+
+func instruments() (metric.Int64Counter, metric.Int64Gauge) {
+	instrOnce.Do(func() {
+		meter := otel.Meter("github.com/hazemarian/poor-man-stack/pmcluster/internal/backup")
+		var err error
+		backupsTotal, err = meter.Int64Counter(
+			"pmcluster.backups.total",
+			metric.WithDescription("Backup runs counted by status and kind"),
+		)
+		if err != nil {
+			backupsTotal, _ = otel.Meter("noop").Int64Counter("noop")
+		}
+		backupLastUnix, err = meter.Int64Gauge(
+			"pmcluster.backup.last_unix",
+			metric.WithUnit("s"),
+			metric.WithDescription("Unix timestamp of the most recent backup attempt, labelled by status and kind. Stays alertable when a scheduled or pre-deploy backup hasn't run."),
+		)
+		if err != nil {
+			backupLastUnix, _ = otel.Meter("noop").Int64Gauge("noop")
+		}
+	})
+	return backupsTotal, backupLastUnix
+}
+
+// RecordOutcome bumps the backup counter + gauge. Safe to call from any
+// trigger site — keeps deploy/cli/api in agreement about what's observed.
+func RecordOutcome(ctx context.Context, kind, status string) {
+	counter, gauge := instruments()
+	attrs := metric.WithAttributes(
+		attribute.String("kind", kind),
+		attribute.String("status", status),
+	)
+	counter.Add(ctx, 1, attrs)
+	gauge.Record(ctx, time.Now().Unix(), attrs)
+}
 
 // ServiceName matches the bundled backup-stack.yml (<stack>_<service>).
 const ServiceName = "backup_volume-backup"

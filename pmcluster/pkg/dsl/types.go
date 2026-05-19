@@ -58,6 +58,12 @@ type Service struct {
 type Expose struct {
 	Port int    `json:"port"` // container-side port
 	Host string `json:"host"` // FQDN; e.g. "api.${app}.${domain}"
+
+	// CORSDisabled opts the exposed router out of the cluster-wide
+	// cors-default Traefik middleware. Set this when the service owns
+	// CORS itself (e.g. multi-tenant dynamic origins) or when its host
+	// lives on a domain the cluster's shared regex doesn't cover.
+	CORSDisabled bool `json:"cors_disabled,omitempty"`
 }
 
 // Healthcheck is either a shorthand (Type set) or a full-form Compose

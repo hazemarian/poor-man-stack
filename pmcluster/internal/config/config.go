@@ -16,6 +16,12 @@ type Config struct {
 	ListenAddr string `mapstructure:"listen_addr"` // default 127.0.0.1:9090
 	DataDir    string `mapstructure:"data_dir"`    // default $HOME/.pmcluster
 	LogLevel   string `mapstructure:"log_level"`   // debug|info|warn|error
+
+	// OTLPEndpoint is the base URL of the OTel Collector that
+	// pmcluster's own daemon ships traces/metrics/logs to. The
+	// observability stack publishes the OTLP/HTTP receiver on
+	// 127.0.0.1:4318 on every manager node. Empty disables self-telemetry.
+	OTLPEndpoint string `mapstructure:"otlp_endpoint"`
 }
 
 func (c *Config) DBPath() string            { return filepath.Join(c.DataDir, "data.db") }
@@ -29,9 +35,10 @@ func defaultConfig() (*Config, error) {
 		return nil, fmt.Errorf("resolve home dir: %w", err)
 	}
 	return &Config{
-		ListenAddr: "127.0.0.1:9090",
-		DataDir:    filepath.Join(home, ".pmcluster"),
-		LogLevel:   "info",
+		ListenAddr:   "127.0.0.1:9090",
+		DataDir:      filepath.Join(home, ".pmcluster"),
+		LogLevel:     "info",
+		OTLPEndpoint: "http://127.0.0.1:4318",
 	}, nil
 }
 
@@ -52,6 +59,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("listen_addr", cfg.ListenAddr)
 	v.SetDefault("data_dir", cfg.DataDir)
 	v.SetDefault("log_level", cfg.LogLevel)
+	v.SetDefault("otlp_endpoint", cfg.OTLPEndpoint)
 
 	resolved := configPath
 	if resolved == "" {

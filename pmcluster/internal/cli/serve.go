@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -10,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/backup"
+	"github.com/hazemarian/poor-man-stack/pmcluster/internal/buildinfo"
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/cluster"
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/config"
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/credentials"
@@ -18,6 +20,7 @@ import (
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/logger"
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/server"
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/store"
+	"github.com/hazemarian/poor-man-stack/pmcluster/internal/telemetry"
 )
 
 var serveCmd = &cobra.Command{
@@ -55,6 +58,27 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err := logger.Sweep(cfg.LogsDir(), time.Now()); err != nil {
 		log.Warn().Err(err).Msg("log sweep had issues")
 	}
+
+	// Best-effort self-telemetry. Endpoint empty disables; an error
+	// from the exporter (e.g. malformed URL) shouldn't take down the
+	// daemon — operators can fix and restart.
+	telemetryShutdown, err := telemetry.Init(cmd.Context(), telemetry.Options{
+		Endpoint:       cfg.OTLPEndpoint,
+		ServiceName:    "pmcluster",
+		ServiceVersion: buildinfo.Version,
+	})
+	if err != nil {
+		log.Warn().Err(err).Str("endpoint", cfg.OTLPEndpoint).Msg("OTel telemetry disabled")
+	} else if cfg.OTLPEndpoint != "" {
+		log.Info().Str("endpoint", cfg.OTLPEndpoint).Msg("OTel telemetry enabled")
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := telemetryShutdown(ctx); err != nil {
+			log.Warn().Err(err).Msg("telemetry shutdown had issues")
+		}
+	}()
 
 	st, err := store.Open(cfg.DBPath())
 	if err != nil {

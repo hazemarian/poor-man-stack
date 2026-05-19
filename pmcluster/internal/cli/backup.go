@@ -69,11 +69,13 @@ func runBackupCreate(cmd *cobra.Command, _ []string) error {
 			paths = joinPaths(res.ArchivePaths)
 		}
 		_ = st.FinishBackup(ctx, id, "failed", paths, err.Error())
+		backup.RecordOutcome(ctx, backup.KindOnDemand, backup.StatusFailed)
 		return fmt.Errorf("backup failed (recorded as id=%d): %w", id, err)
 	}
 	if err := st.FinishBackup(ctx, id, "succeeded", joinPaths(res.ArchivePaths), ""); err != nil {
 		return fmt.Errorf("record finish: %w", err)
 	}
+	backup.RecordOutcome(ctx, backup.KindOnDemand, backup.StatusSucceeded)
 	fmt.Fprintf(cmd.OutOrStdout(), "✅ Backup id=%d succeeded.\n", id)
 	if len(res.ArchivePaths) > 0 {
 		fmt.Fprintln(cmd.OutOrStdout(), "Archives:")

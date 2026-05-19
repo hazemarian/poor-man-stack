@@ -25,6 +25,7 @@ services:
         [[- if .ACMEEmail]]
         - "traefik.http.routers.openobserve.tls.certresolver=letsencrypt"
         [[- end]]
+        - "traefik.http.routers.openobserve.middlewares=cors-default@file"
         - "traefik.swarm.network=traefik-net"
     environment:
       - ZO_DATA_DIR=/data
@@ -58,6 +59,17 @@ services:
       restart_policy:
         condition: any
         delay: 5s
+    # Loopback-only host port so the pmcluster daemon (running on the
+    # manager host, not in Swarm) can ship its own traces/metrics/logs
+    # via OTLP/HTTP. mode: host binds the port on each node that runs
+    # the collector (global service), but host_ip 127.0.0.1 keeps it
+    # off the public iface. gRPC (4317) stays internal.
+    ports:
+      - target: 4318
+        published: 4318
+        protocol: tcp
+        mode: host
+        host_ip: 127.0.0.1
     volumes:
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro

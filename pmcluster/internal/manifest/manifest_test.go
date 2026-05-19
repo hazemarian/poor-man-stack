@@ -137,6 +137,45 @@ func TestTranslate_DonationCampaignSmoke(t *testing.T) {
 }
 
 // TestParse_RejectsUnknownKeys is a smoke for the strict YAML mode.
+// TestTranslate_CORSDisabledOptsOut verifies the cors-default middleware
+// label is omitted from the exposed router when cors_disabled: true is
+// set in the manifest.
+func TestTranslate_CORSDisabledOptsOut(t *testing.T) {
+	src := `
+app: my-app
+env: production
+domain: example.com
+services:
+  api:
+    image: example/api:latest
+    expose:
+      port: 8080
+      host: api.${app}.${domain}
+      cors_disabled: true
+`
+	app, err := Parse([]byte(src))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if err := Interpolate(app); err != nil {
+		t.Fatalf("Interpolate: %v", err)
+	}
+	if err := Validate(app); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	out, err := Translate(app)
+	if err != nil {
+		t.Fatalf("Translate: %v", err)
+	}
+	if strings.Contains(string(out), "cors-default@file") {
+		t.Errorf("cors_disabled: true should omit cors-default middleware, got:\n%s", out)
+	}
+	// Sanity: the rest of the Traefik labels should still be present.
+	if !strings.Contains(string(out), "traefik.http.routers.my-app-api.rule") {
+		t.Errorf("expected Traefik router rule label, got:\n%s", out)
+	}
+}
+
 func TestParse_RejectsUnknownKeys(t *testing.T) {
 	bad := `
 app: donation-campaign

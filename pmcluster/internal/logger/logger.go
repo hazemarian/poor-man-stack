@@ -138,6 +138,11 @@ func New(opts Options) (zerolog.Logger, io.Closer, error) {
 		closer = fw
 	}
 
+	// OTel logs sink. Always wired; when the global LoggerProvider is
+	// noop (telemetry.Init not run or endpoint empty) Emit is a no-op,
+	// so this costs nothing in one-shot CLI commands.
+	writers = append(writers, newOTelWriter())
+
 	if len(writers) == 0 {
 		return zerolog.Nop(), noopCloser{}, nil
 	}

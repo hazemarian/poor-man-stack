@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -174,6 +175,7 @@ func runStackShow(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Fprintf(out, "Created:          %s\n", time.Unix(s.CreatedAt, 0).Format(time.RFC3339))
 	fmt.Fprintf(out, "Updated:          %s\n", time.Unix(s.UpdatedAt, 0).Format(time.RFC3339))
+	fmt.Fprintf(out, "Last backup:      %s\n", formatLastBackup(cmd.Context(), st, name))
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "Recent revisions (%d):\n", len(revs))
 
@@ -187,6 +189,31 @@ func runStackShow(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(w, "%s%d\t%s\n", marker, r.Revision, time.Unix(r.CreatedAt, 0).Format(time.RFC3339))
 	}
 	return w.Flush()
+}
+
+// formatLastBackup returns a one-line summary of the most recent backup
+// for the named stack, or a "(none recorded)" placeholder. Errors are
+// folded into the display string — stack show should never fail because
+// the backup lookup hiccupped.
+func formatLastBackup(ctx context.Context, st *store.Store, name string) string {
+	backups, err := st.ListBackupsForStack(ctx, name)
+	if err != nil {
+		return "(lookup failed: " + err.Error() + ")"
+	}
+	if len(backups) == 0 {
+		return "(none recorded)"
+	}
+	b := backups[0]
+	ts := time.Unix(b.StartedAt, 0).Format(time.RFC3339)
+	revPart := ""
+	if b.Revision.Valid {
+		revPart = fmt.Sprintf(" (rev %d)", b.Revision.Int64)
+	}
+	errPart := ""
+	if b.Status == "failed" && b.ErrorMessage != "" {
+		errPart = " — " + b.ErrorMessage
+	}
+	return fmt.Sprintf("%s @ %s%s%s", b.Status, ts, revPart, errPart)
 }
 
 func runRollback(cmd *cobra.Command, args []string) error {

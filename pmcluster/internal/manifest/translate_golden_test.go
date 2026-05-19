@@ -47,6 +47,7 @@ func TestTranslate_Golden(t *testing.T) {
 				"traefik.enable",
 				"traefik.http.routers.web-app-api.rule",
 				"api.web-app.example.com",
+				"traefik.http.routers.web-app-api.middlewares: cors-default@file",
 			},
 		},
 		{
@@ -62,6 +63,7 @@ func TestTranslate_Golden(t *testing.T) {
 				"api.donation-campaign.example.com",
 				"condition: none",
 				"replicas: 2",
+				"traefik.http.routers.donation-campaign-api.middlewares: cors-default@file",
 			},
 		},
 		{
