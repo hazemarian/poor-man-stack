@@ -116,8 +116,8 @@ receivers:
           attributes:
             container.name:       "__BT__name__BT__"
             container.id:         "__BT__container_id__BT__"
-            service.name:         "__BT__label(\"com.docker.swarm.service.name\")__BT__"
-            service.namespace:    "__BT__label(\"com.docker.stack.namespace\")__BT__"
+            service.name:         "__BT__labels[\"com.docker.swarm.service.name\"]__BT__"
+            service.namespace:    "__BT__labels[\"com.docker.stack.namespace\"]__BT__"
             container.image.name: "__BT__image__BT__"
           operators:
             - type: json_parser
