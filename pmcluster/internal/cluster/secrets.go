@@ -131,6 +131,7 @@ func detachConfigFromServices(ctx context.Context, configName string) error {
 		if strings.Contains(string(inspectOut), configName) {
 			cmd := exec.CommandContext(ctx, "docker", "service", "update",
 				"--config-rm", configName,
+				"--force",
 				"--detach=true",
 				svc,
 			)
