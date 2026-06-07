@@ -297,7 +297,7 @@ func RenderOTelCollectorConfig(in RenderInput) ([]byte, error) {
 	rendered := strings.ReplaceAll(otelCollectorConfigTemplate, "__BASIC_AUTH_PLACEHOLDER__", basicAuth)
 	// __BT__ → backtick, __QT__ → double-quote (for receiver_creator expressions)
 	rendered = strings.ReplaceAll(rendered, "__BT__", "`")
-	rendered = strings.ReplaceAll(rendered, "__QT__", "\"")
+	rendered = strings.ReplaceAll(rendered, "__QT__", "\\\"")
 	return []byte(rendered), nil
 }
 

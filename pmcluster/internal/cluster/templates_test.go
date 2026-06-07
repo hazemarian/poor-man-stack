@@ -214,8 +214,8 @@ func TestRenderOTelCollectorConfig_ReceiverCreatorAttributes(t *testing.T) {
 	for _, want := range []string{
 		`container.name:       "` + "`name`" + `"`,
 		`container.id:         "` + "`container_id`" + `"`,
-		`service.name:         "` + "`label:\"com.docker.swarm.service.name\"`" + `"`,
-		`service.namespace:    "` + "`label:\"com.docker.stack.namespace\"`" + `"`,
+		`service.name:         "` + "`label:\\\"com.docker.swarm.service.name\\\"`" + `"`,
+		`service.namespace:    "` + "`label:\\\"com.docker.stack.namespace\\\"`" + `"`,
 		`container.image.name: "` + "`image`" + `"`,
 	} {
 		if !strings.Contains(body, want) {
