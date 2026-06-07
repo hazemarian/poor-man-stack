@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
 
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/docker"
 	"golang.org/x/crypto/bcrypt"
@@ -56,7 +58,17 @@ func EnsureConfig(ctx context.Context, d docker.Client, name string, data []byte
 	}
 	if exists {
 		if err := d.ConfigRemove(ctx, name); err != nil {
-			return false, fmt.Errorf("remove existing config %s: %w", name, err)
+			// Config may be in use by a running service — detach it first.
+			if strings.Contains(err.Error(), "is in use") {
+				if detachErr := detachConfigFromServices(ctx, name); detachErr != nil {
+					return false, fmt.Errorf("detach config %s from services: %w", name, detachErr)
+				}
+				if err2 := d.ConfigRemove(ctx, name); err2 != nil {
+					return false, fmt.Errorf("remove existing config %s (after detach): %w", name, err2)
+				}
+			} else {
+				return false, fmt.Errorf("remove existing config %s: %w", name, err)
+			}
 		}
 	}
 	err = d.ConfigCreate(ctx, docker.ConfigSpec{
@@ -90,4 +102,42 @@ func HtpasswdLine(user, password string) (string, error) {
 		return "", fmt.Errorf("bcrypt: %w", err)
 	}
 	return fmt.Sprintf("%s:%s\n", user, hash), nil
+}
+
+// detachConfigFromServices finds all Swarm services that mount configName
+// and runs `docker service update --config-rm <config> <service>` for each.
+// This is only needed when ConfigRemove fails because the config is in use.
+func detachConfigFromServices(ctx context.Context, configName string) error {
+	out, err := exec.CommandContext(ctx, "docker", "service", "ls",
+		"--format", "{{.Name}}",
+		"--filter", "mode=replicated,global",
+	).Output()
+	if err != nil {
+		return fmt.Errorf("list services: %w", err)
+	}
+	for _, svc := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		svc = strings.TrimSpace(svc)
+		if svc == "" {
+			continue
+		}
+		// Check if this service mounts the config
+		inspectOut, err := exec.CommandContext(ctx, "docker", "service", "inspect",
+			"--format", "{{range .Spec.TaskTemplate.ContainerSpec.Configs}}{{.ConfigName}} {{end}}",
+			svc,
+		).Output()
+		if err != nil {
+			continue // skip services we can't inspect
+		}
+		if strings.Contains(string(inspectOut), configName) {
+			cmd := exec.CommandContext(ctx, "docker", "service", "update",
+				"--config-rm", configName,
+				"--detach=true",
+				svc,
+			)
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("detach %s from %s: %w", configName, svc, err)
+			}
+		}
+	}
+	return nil
 }
