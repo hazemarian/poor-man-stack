@@ -10,6 +10,7 @@ import (
 	"fmt"
 
 	cerrdefs "github.com/containerd/errdefs"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/swarm"
 	"github.com/docker/docker/client"
@@ -36,8 +37,13 @@ type Client interface {
 	ConfigRemove(ctx context.Context, name string) error
 	NetworkRemove(ctx context.Context, name string) error
 
+	ServiceList(ctx context.Context) ([]Service, error)
 	NodeList(ctx context.Context) ([]Node, error)
 	JoinTokens(ctx context.Context) (JoinTokens, error)
+
+	// ConfigList returns all config names with the given label filter.
+	// labelKey="" means no filter.
+	ConfigList(ctx context.Context, labelKey, labelValue string) ([]string, error)
 
 	Close() error
 }
@@ -84,6 +90,15 @@ type ConfigSpec struct {
 	Name   string
 	Data   []byte
 	Labels map[string]string
+}
+
+// Service is a minimal view of a Docker Swarm service — just the fields
+// needed to check replica health in cluster up.
+type Service struct {
+	ID       string
+	Name     string
+	Replicas uint64 // current running replicas
+	Desired  uint64 // desired replicas from the spec
 }
 
 type Node struct {
@@ -252,6 +267,35 @@ func (r *realClient) NetworkRemove(ctx context.Context, name string) error {
 	return idempotentRemove(r.c.NetworkRemove(ctx, name), "network", name)
 }
 
+func (r *realClient) ServiceList(ctx context.Context) ([]Service, error) {
+	svcs, err := r.c.ServiceList(ctx, swarm.ServiceListOptions{Status: true})
+	if err != nil {
+		return nil, fmt.Errorf("docker service ls: %w", err)
+	}
+	out := make([]Service, 0, len(svcs))
+	for _, s := range svcs {
+		spec := s.Spec
+		desired := uint64(0)
+		if spec.Mode.Replicated != nil && spec.Mode.Replicated.Replicas != nil {
+			desired = *spec.Mode.Replicated.Replicas
+		}
+		// For global services, desired is tracked implicitly (1 per node
+		// matching placement constraints). We set it to the running count
+		// so the health check treats "running on every eligible node" as
+		// healthy.
+		if spec.Mode.Global != nil {
+			desired = s.ServiceStatus.RunningTasks
+		}
+		out = append(out, Service{
+			ID:       s.ID,
+			Name:     s.Spec.Name,
+			Replicas: s.ServiceStatus.RunningTasks,
+			Desired:  desired,
+		})
+	}
+	return out, nil
+}
+
 func (r *realClient) NodeList(ctx context.Context) ([]Node, error) {
 	nodes, err := r.c.NodeList(ctx, swarm.NodeListOptions{})
 	if err != nil {
@@ -288,6 +332,23 @@ func (r *realClient) JoinTokens(ctx context.Context) (JoinTokens, error) {
 		Worker:  sw.JoinTokens.Worker,
 		Manager: sw.JoinTokens.Manager,
 	}, nil
+}
+
+func (r *realClient) ConfigList(ctx context.Context, labelKey, labelValue string) ([]string, error) {
+	opts := swarm.ConfigListOptions{}
+	if labelKey != "" {
+		opts.Filters = filters.NewArgs()
+		opts.Filters.Add("label", labelKey+"="+labelValue)
+	}
+	configs, err := r.c.ConfigList(ctx, opts)
+	if err != nil {
+		return nil, fmt.Errorf("config list: %w", err)
+	}
+	names := make([]string, 0, len(configs))
+	for _, c := range configs {
+		names = append(names, c.Spec.Name)
+	}
+	return names, nil
 }
 
 // isNotFoundString is a fallback for older daemons whose error doesn't

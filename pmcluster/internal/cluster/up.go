@@ -20,6 +20,7 @@ type UpInput struct {
 	ACMEEmail             string
 	TraefikAdminUser      string // defaults to "admin"
 	OpenObserveAdminEmail string
+	ConfigDir             string // ~/.pmcluster/config/ — user-editable templates
 }
 
 // UpResult includes plaintext passwords for any credentials newly minted
@@ -127,27 +128,30 @@ func Up(ctx context.Context, deps UpDeps, in UpInput) (*UpResult, error) {
 		OpenObserveAdminEmail:    openobsCred.Username,
 		OpenObserveAdminPassword: openobsCred.Password,
 		ACMEEmail:                in.ACMEEmail,
+		ConfigDir:                in.ConfigDir,
 	}
 
 	otelYAML, err := RenderOTelCollectorConfig(render)
 	if err != nil {
 		return res, err
 	}
-	if isNew, err := EnsureConfig(ctx, deps.Docker, "pmcluster_otel_config", otelYAML); err != nil {
+	otelConfigName, err := EnsureConfig(ctx, deps.Docker, "pmcluster_otel_config", otelYAML)
+	if err != nil {
 		return res, err
-	} else if isNew {
-		res.NewConfigs = append(res.NewConfigs, "pmcluster_otel_config")
 	}
+	res.NewConfigs = append(res.NewConfigs, otelConfigName)
+	render.OTelConfigName = otelConfigName
 
 	traefikYAML, err := RenderTraefikDynamic(render)
 	if err != nil {
 		return res, err
 	}
-	if isNew, err := EnsureConfig(ctx, deps.Docker, "pmcluster_traefik_dynamic", traefikYAML); err != nil {
+	traefikConfigName, err := EnsureConfig(ctx, deps.Docker, "pmcluster_traefik_dynamic", traefikYAML)
+	if err != nil {
 		return res, err
-	} else if isNew {
-		res.NewConfigs = append(res.NewConfigs, "pmcluster_traefik_dynamic")
 	}
+	res.NewConfigs = append(res.NewConfigs, traefikConfigName)
+	render.TraefikConfigName = traefikConfigName
 
 	step("Deploying stacks (infra → observability → backup)")
 	for _, s := range []stackName{StackInfra, StackObservability, StackBackup} {
@@ -160,6 +164,11 @@ func Up(ctx context.Context, deps UpDeps, in UpInput) (*UpResult, error) {
 			return res, fmt.Errorf("deploy %s: %w", s, err)
 		}
 		res.StacksDeployed = append(res.StacksDeployed, string(s))
+	}
+
+	step("Waiting for all services to become healthy")
+	if err := WaitHealthyStacks(ctx, deps.Docker, out); err != nil {
+		return res, fmt.Errorf("health check: %w", err)
 	}
 
 	step("Cluster up complete.")

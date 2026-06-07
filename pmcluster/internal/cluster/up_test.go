@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/credentials"
+	"github.com/hazemarian/poor-man-stack/pmcluster/internal/docker"
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/store"
 )
 
@@ -30,6 +31,11 @@ func newUpDeps(t *testing.T) (UpDeps, *fakeDocker, *recordingDeployer) {
 
 	f := newFakeDocker()
 	f.info = goodSwarmInfo()
+	// Pre-seed bundled services as healthy so WaitHealthyStacks passes in
+	// unit tests (real Docker not available). Each service reports 1/1 replicas.
+	for _, name := range bundledServices {
+		f.services[name] = docker.Service{Name: name, Replicas: 1, Desired: 1}
+	}
 	deployer := &recordingDeployer{}
 
 	return UpDeps{

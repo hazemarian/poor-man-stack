@@ -3,14 +3,10 @@ version: "3.9"
 services:
   openobserve:
     image: public.ecr.aws/zinclabs/openobserve:v0.30.0
-    entrypoint: ["/bin/sh", "-c"]
-    # The email isn't sensitive; we substitute it directly. The password
-    # comes from a Swarm secret (read into ZO_ROOT_USER_PASSWORD via the
-    # shell wrapper because OpenObserve doesn't natively support _FILE env vars).
-    command:
-      - |
-        export ZO_ROOT_USER_PASSWORD=$$(cat /run/secrets/zo_root_user_password)
-        exec /go/bin/openobserve
+    # No entrypoint override — the image is distroless (no /bin/sh).
+    # ZO_ROOT_USER_PASSWORD is rendered directly by pmcluster at deploy
+    # time from the managed credential. It flows through `docker stack deploy`
+    # stdin only, never persisted to disk.
     deploy:
       mode: replicated
       replicas: 1
@@ -34,8 +30,7 @@ services:
       - ZO_TELEMETRY=false
       - ZO_APP_NAME=openobserve
       - ZO_ROOT_USER_EMAIL=${OPENOBSERVE_ADMIN_EMAIL}
-    secrets:
-      - zo_root_user_password
+      - ZO_ROOT_USER_PASSWORD=__OPENOBSERVE_PASSWORD__
     volumes:
       - openobserve_data:/data
     networks:
@@ -75,7 +70,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /etc/localtime:/etc/localtime:ro
     configs:
-      - source: pmcluster_otel_config
+      - source: __OTEL_CONFIG_NAME__
         target: /etc/otel-collector-config.yaml
     networks:
       - monitoring-net
@@ -90,6 +85,9 @@ networks:
     external: true
 
 secrets:
+  # zo_root_user_password is managed by pmcluster as a Swarm secret for
+  # rotating credentials, but the password is rendered directly into the
+  # ZO_ROOT_USER_PASSWORD env var at deploy time (no /bin/sh needed).
   zo_root_user_password:
     external: true
 
@@ -97,5 +95,5 @@ secrets:
 # every node by Swarm itself, so the otel-collector global service can mount
 # the config without bind-mount-from-disk multi-node fragility.
 configs:
-  pmcluster_otel_config:
+  __OTEL_CONFIG_NAME__:
     external: true

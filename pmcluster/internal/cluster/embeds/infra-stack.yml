@@ -45,7 +45,7 @@ services:
       - traefik_acme:/letsencrypt
       [[- end]]
     configs:
-      - source: pmcluster_traefik_dynamic
+      - source: __TRAEFIK_CONFIG_NAME__
         target: /etc/traefik/dynamic/conf.yml
     # host.docker.internal lets Traefik reach pmcluster (host process,
     # brew-installed) at host.docker.internal:9090 on Linux.
@@ -160,5 +160,5 @@ secrets:
 # pmcluster cluster up. Replaces the bind-mounted ./traefik-dynamic.yml
 # from the legacy bash setup.
 configs:
-  pmcluster_traefik_dynamic:
+  __TRAEFIK_CONFIG_NAME__:
     external: true

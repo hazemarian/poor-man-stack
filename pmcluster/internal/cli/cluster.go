@@ -88,6 +88,7 @@ func runClusterUp(cmd *cobra.Command, _ []string) error {
 	in.KeyPath, _ = cmd.Flags().GetString("key")
 	in.OpenObserveAdminEmail, _ = cmd.Flags().GetString("openobserve-email")
 	in.TraefikAdminUser, _ = cmd.Flags().GetString("traefik-admin-user")
+	in.ConfigDir = cfg.ConfigDir()
 
 	st, err := store.Open(cfg.DBPath())
 	if err != nil {

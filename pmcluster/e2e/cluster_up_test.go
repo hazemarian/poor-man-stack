@@ -124,6 +124,25 @@ func TestClusterUp(t *testing.T) {
 		}
 	})
 
+	// ── Service health ────────────────────────────────────────────────────────
+	// Each stack's services should reach desired replicas within 120 s.
+	t.Run("all services are healthy after cluster up", func(t *testing.T) {
+		for _, svc := range []struct {
+			stack   string
+			service string
+			wantRep int  // >= (global services may differ depending on node count)
+		}{
+			{stack: "infra", service: "traefik", wantRep: 1},
+			{stack: "infra", service: "portainer", wantRep: 1},
+			{stack: "observability", service: "openobserve", wantRep: 1},
+			{stack: "observability", service: "otel-collector", wantRep: 1},
+			{stack: "backup", service: "volume-backup", wantRep: 1},
+		} {
+			fullName := svc.stack + "_" + svc.service
+			waitServiceHealthy(t, ctx, fullName, svc.wantRep, 120*time.Second)
+		}
+	})
+
 	// ── Docker post-conditions ────────────────────────────────────────────────
 	t.Run("docker stack ls shows infra, observability, backup", func(t *testing.T) {
 		out := mustDockerRun(t, ctx, "stack", "ls", "--format", "{{.Name}}")
@@ -151,9 +170,10 @@ func TestClusterUp(t *testing.T) {
 
 	t.Run("docker config ls shows pmcluster configs", func(t *testing.T) {
 		out := mustDockerRun(t, ctx, "config", "ls", "--format", "{{.Name}}")
-		for _, cfg := range []string{"pmcluster_otel_config", "pmcluster_traefik_dynamic"} {
-			if !strings.Contains(out, cfg) {
-				t.Errorf("docker config ls: config %q not found; output:\n%s", cfg, out)
+		// Configs are versioned (e.g. pmcluster_otel_config_v001).
+		for _, prefix := range []string{"pmcluster_otel_config_v", "pmcluster_traefik_dynamic_v"} {
+			if !strings.Contains(out, prefix) {
+				t.Errorf("docker config ls: config with prefix %q not found; output:\n%s", prefix, out)
 			}
 		}
 	})
@@ -202,20 +222,60 @@ func TestClusterUp(t *testing.T) {
 		}
 	})
 
-	// ── Idempotency: second run ───────────────────────────────────────────────
-	t.Run("second cluster up is idempotent (no newly-created lines)", func(t *testing.T) {
-		t.Log("Running: pmcluster cluster up (second run — idempotency check)…")
+	// ── Config update: second run updates Docker config objects ───────────
+	// Docker configs are immutable so pmcluster creates a new versioned
+	// name on each run (e.g. pmcluster_otel_config_v002). The compose files
+	// are rendered with the new name and services pick it up on redeploy.
+	t.Run("second cluster up updates docker configs and keeps services healthy", func(t *testing.T) {
+		// Record current versioned config IDs before re-run (by prefix).
+		configsBefore := map[string]string{}
+		for _, prefix := range []string{"pmcluster_otel_config_v", "pmcluster_traefik_dynamic_v"} {
+			id := dockerConfigIDByPrefix(t, ctx, prefix)
+			if id == "" {
+				t.Fatalf("config with prefix %q not found before re-run", prefix)
+			}
+			configsBefore[prefix] = id
+			t.Logf("Before: config prefix=%s => ID=%s", prefix, id)
+		}
+
+		// Re-run cluster up.
+		t.Log("Running: pmcluster cluster up (second run — config update)…")
 		out2, _, code := runCmdCtx(t, ctx, homeDir, upArgs...)
 		if code != 0 {
 			t.Fatalf("pmcluster cluster up (second run) exited %d:\n%s", code, out2)
 		}
-		t.Logf("cluster up (idempotent) output:\n%s", out2)
 
-		// On a re-run, no credential should be marked as "newly created".
+		// Verify config IDs changed (new version created, old GC'd).
+		for _, prefix := range []string{"pmcluster_otel_config_v", "pmcluster_traefik_dynamic_v"} {
+			newID := dockerConfigIDByPrefix(t, ctx, prefix)
+			if newID == "" {
+				t.Fatalf("config with prefix %q not found after re-run", prefix)
+			}
+			if newID == configsBefore[prefix] {
+				t.Errorf("config with prefix %q ID did not change after re-deploy (old=%s, new=%s)", prefix, configsBefore[prefix], newID)
+			}
+			t.Logf("After:  config prefix=%s => ID=%s", prefix, newID)
+		}
+
+		// Services must still be healthy after config update + re-deploy.
+		for _, svc := range []struct {
+			stack   string
+			service string
+			wantRep int
+		}{
+			{stack: "infra", service: "traefik", wantRep: 1},
+			{stack: "infra", service: "portainer", wantRep: 1},
+			{stack: "observability", service: "openobserve", wantRep: 1},
+			{stack: "observability", service: "otel-collector", wantRep: 1},
+		} {
+			fullName := svc.stack + "_" + svc.service
+			waitServiceHealthy(t, ctx, fullName, svc.wantRep, 120*time.Second)
+		}
+
+		// No credential should be marked as "newly created" on re-run.
 		if strings.Contains(out2, "newly created") {
 			t.Errorf("expected NO 'newly created' on second run; got:\n%s", out2)
 		}
-		// But the completion marker must still be present.
 		if !strings.Contains(out2, "cluster up complete") {
 			t.Errorf("expected 'cluster up complete' on second run; got:\n%s", out2)
 		}
@@ -246,7 +306,9 @@ func TestClusterUp(t *testing.T) {
 
 // ensureSwarmActive checks whether Swarm is already active. If not, it runs
 // `docker swarm init --advertise-addr 127.0.0.1` and returns true so the
-// caller knows to leave the Swarm in t.Cleanup.
+// caller knows to leave the Swarm in t.Cleanup. It also ensures the backup
+// destination directory exists inside the Docker VM (required on Docker
+// Desktop where /var/backups is not shared from the macOS host).
 func ensureSwarmActive(t *testing.T, ctx context.Context) (weInited bool) {
 	t.Helper()
 	inspectCtx, inspectCancel := context.WithTimeout(ctx, 15*time.Second)
@@ -255,19 +317,38 @@ func ensureSwarmActive(t *testing.T, ctx context.Context) (weInited bool) {
 	out, err := dockerRun(inspectCtx, "info", "--format", "{{.Swarm.LocalNodeState}}")
 	if err == nil && strings.TrimSpace(out) == "active" {
 		t.Log("Swarm already active; skipping docker swarm init")
-		return false
+	} else {
+		t.Log("Swarm not active; running docker swarm init --advertise-addr 127.0.0.1")
+		initCtx, initCancel := context.WithTimeout(ctx, 30*time.Second)
+		defer initCancel()
+
+		initOut, initErr := dockerRun(initCtx, "swarm", "init", "--advertise-addr", "127.0.0.1")
+		if initErr != nil {
+			t.Fatalf("docker swarm init: %v\n%s", initErr, initOut)
+		}
+		t.Log("docker swarm init: OK")
+		weInited = true
 	}
 
-	t.Log("Swarm not active; running docker swarm init --advertise-addr 127.0.0.1")
-	initCtx, initCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer initCancel()
-
-	initOut, initErr := dockerRun(initCtx, "swarm", "init", "--advertise-addr", "127.0.0.1")
-	if initErr != nil {
-		t.Fatalf("docker swarm init: %v\n%s", initErr, initOut)
+	// Ensure the backup destination directory exists inside the Docker VM.
+	// On Docker Desktop, /var/backups is not shared from macOS, so we create
+	// it directly inside the VM via nsenter. On native Linux this is a no-op
+	// if the directory already exists.
+	dirCtx, dirCancel := context.WithTimeout(ctx, 15*time.Second)
+	defer dirCancel()
+	// nsenter into the host PID namespace (Docker Desktop VM or real host)
+	// and mkdir -p. If this fails (e.g., no --privileged support), we log
+	// but don't fail — the backup service health check will catch it.
+	mkdirOut, mkdirErr := dockerRun(dirCtx, "run", "--rm", "--privileged", "--pid=host",
+		"alpine", "nsenter", "-t", "1", "-m", "-u", "-n", "-i",
+		"mkdir", "-p", "/var/backups/docker-volumes")
+	if mkdirErr != nil {
+		t.Logf("Note: could not create /var/backups/docker-volumes (backup service may fail): %v\n%s", mkdirErr, mkdirOut)
+	} else {
+		t.Log("/var/backups/docker-volumes ensured inside Docker VM")
 	}
-	t.Log("docker swarm init: OK")
-	return true
+
+	return weInited
 }
 
 // generateSelfSignedCert creates a self-signed RSA-2048 certificate + key in
@@ -345,6 +426,107 @@ func dockerRun(ctx context.Context, args ...string) (string, error) {
 // queries where absence is acceptable).
 func dockerRunNoFail(ctx context.Context, args ...string) (string, error) {
 	return dockerRun(ctx, args...)
+}
+
+// waitServiceHealthy polls `docker service ls` for <stack>_<service> until
+// it reaches at least wantReplicas running replicas or until deadline expires.
+// Global services report 0/0 until scheduled, then N/N.
+func waitServiceHealthy(t *testing.T, ctx context.Context, fullName string, wantRep int, deadline time.Duration) {
+	t.Helper()
+	queryCtx, cancel := context.WithTimeout(ctx, deadline)
+	defer cancel()
+
+	for {
+		select {
+		case <-queryCtx.Done():
+			t.Fatalf("service %s: did not reach %d running replicas within %v", fullName, wantRep, deadline)
+		default:
+		}
+
+		out, err := dockerRunNoFail(ctx,
+			"service", "ls",
+			"--filter", "name="+fullName,
+			"--format", "{{.Name}} {{.Replicas}}",
+		)
+		if err != nil {
+			t.Logf("service %s: docker service ls failed (will retry): %v", fullName, err)
+			time.Sleep(2 * time.Second)
+			continue
+		}
+
+		replicas := parseServiceReplicas(t, out, fullName)
+		if replicas.running >= wantRep {
+			t.Logf("service %s: healthy (%d/%d replicas)", fullName, replicas.running, replicas.total)
+			return
+		}
+		t.Logf("service %s: %d/%d replicas — waiting…", fullName, replicas.running, replicas.total)
+		time.Sleep(3 * time.Second)
+	}
+}
+
+// serviceReplicas holds the parsed running/total count from docker service ls.
+type serviceReplicas struct{ running, total int }
+
+func parseServiceReplicas(t *testing.T, out, fullName string) serviceReplicas {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Format: "<name> <running>/<total>"
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != fullName {
+			continue
+		}
+		parts := strings.SplitN(fields[1], "/", 2)
+		if len(parts) != 2 {
+			return serviceReplicas{}
+		}
+		var r serviceReplicas
+		fmt.Sscanf(parts[0], "%d", &r.running)
+		fmt.Sscanf(parts[1], "%d", &r.total)
+		return r
+	}
+	return serviceReplicas{}
+}
+
+// dockerConfigID returns the Docker config object ID for a named config,
+// or "" if the config does not exist.
+func dockerConfigID(t *testing.T, ctx context.Context, name string) string {
+	t.Helper()
+	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	out, err := dockerRun(cmdCtx, "config", "inspect", "--format", "{{.ID}}", name)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// dockerConfigIDByPrefix finds the latest (highest version) Docker config
+// with the given name prefix and returns its ID, or "" if none found.
+func dockerConfigIDByPrefix(t *testing.T, ctx context.Context, prefix string) string {
+	t.Helper()
+	cmdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	out, err := dockerRun(cmdCtx, "config", "ls", "--format", "{{.Name}}", "--filter", "name="+prefix)
+	if err != nil {
+		return ""
+	}
+	// Find the highest version (alphabetically last).
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	best := ""
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" && line > best {
+			best = line
+		}
+	}
+	if best == "" {
+		return ""
+	}
+	return dockerConfigID(t, ctx, best)
 }
 
 // mustDockerRun runs docker and fails the test if it errors.

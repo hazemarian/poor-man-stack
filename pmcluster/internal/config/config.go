@@ -27,6 +27,7 @@ type Config struct {
 func (c *Config) DBPath() string            { return filepath.Join(c.DataDir, "data.db") }
 func (c *Config) EncryptionKeyPath() string { return filepath.Join(c.DataDir, ".encryption_key") }
 func (c *Config) ConfigPath() string        { return filepath.Join(c.DataDir, "config.yaml") }
+func (c *Config) ConfigDir() string         { return filepath.Join(c.DataDir, "config") }
 func (c *Config) LogsDir() string           { return filepath.Join(c.DataDir, "logs") }
 
 func defaultConfig() (*Config, error) {

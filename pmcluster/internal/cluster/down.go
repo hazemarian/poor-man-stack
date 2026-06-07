@@ -38,11 +38,6 @@ var pmclusterManagedSecrets = []string{
 	"key",
 }
 
-var pmclusterManagedConfigs = []string{
-	"pmcluster_otel_config",
-	"pmcluster_traefik_dynamic",
-}
-
 var pmclusterManagedNetworks = []string{
 	"traefik-net",
 	"monitoring-net",
@@ -88,12 +83,17 @@ func Down(ctx context.Context, deps DownDeps, in DownInput) (*DownResult, error)
 	}
 
 	step("Purging pmcluster-managed Docker configs")
-	for _, name := range pmclusterManagedConfigs {
-		if err := deps.Docker.ConfigRemove(ctx, name); err != nil {
-			fmt.Fprintf(out, "  ⚠ %s: %v\n", name, err)
-			continue
+	allConfigs, err := deps.Docker.ConfigList(ctx, pmclusterLabel, "true")
+	if err != nil {
+		fmt.Fprintf(out, "  ⚠ config list: %v\n", err)
+	} else {
+		for _, name := range allConfigs {
+			if rmErr := deps.Docker.ConfigRemove(ctx, name); rmErr != nil {
+				fmt.Fprintf(out, "  ⚠ %s: %v\n", name, rmErr)
+				continue
+			}
+			res.ConfigsRemoved = append(res.ConfigsRemoved, name)
 		}
-		res.ConfigsRemoved = append(res.ConfigsRemoved, name)
 	}
 
 	step("Purging pmcluster-managed overlay networks")

@@ -23,6 +23,7 @@ type fakeDocker struct {
 	networks map[string]docker.NetworkSpec
 	secrets  map[string]docker.SecretSpec
 	configs  map[string]docker.ConfigSpec
+	services map[string]docker.Service
 
 	// Removal tracking — appended to on each Remove call.
 	removedSecrets  []string
@@ -47,6 +48,7 @@ func newFakeDocker() *fakeDocker {
 		networks: make(map[string]docker.NetworkSpec),
 		secrets:  make(map[string]docker.SecretSpec),
 		configs:  make(map[string]docker.ConfigSpec),
+		services: make(map[string]docker.Service),
 	}
 }
 
@@ -118,6 +120,14 @@ func (f *fakeDocker) ConfigCreate(_ context.Context, spec docker.ConfigSpec) err
 	return nil
 }
 
+func (f *fakeDocker) ServiceList(_ context.Context) ([]docker.Service, error) {
+	out := make([]docker.Service, 0, len(f.services))
+	for _, s := range f.services {
+		out = append(out, s)
+	}
+	return out, nil
+}
+
 func (f *fakeDocker) SecretRemove(_ context.Context, name string) error {
 	if f.secretRemoveErr != nil {
 		if err, ok := f.secretRemoveErr[name]; ok {
@@ -139,6 +149,14 @@ func (f *fakeDocker) NetworkRemove(_ context.Context, name string) error {
 	f.removedNetworks = append(f.removedNetworks, name)
 	delete(f.networks, name)
 	return nil
+}
+
+func (f *fakeDocker) ConfigList(_ context.Context, _, _ string) ([]string, error) {
+	names := make([]string, 0, len(f.configs))
+	for n := range f.configs {
+		names = append(names, n)
+	}
+	return names, nil
 }
 
 func (f *fakeDocker) NodeList(_ context.Context) ([]docker.Node, error) { return nil, nil }

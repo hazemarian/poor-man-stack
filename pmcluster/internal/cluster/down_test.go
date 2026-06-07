@@ -93,13 +93,17 @@ func TestDown_Purge_RemovesAllManagedResources(t *testing.T) {
 			Labels map[string]string
 		}{Name: name}
 	}
-	for _, name := range pmclusterManagedConfigs {
-		f.configs[name] = struct {
-			Name   string
-			Data   []byte
-			Labels map[string]string
-		}{Name: name}
-	}
+	// Configs are now discovered via ConfigList (versioned). Seed two.
+	f.configs["pmcluster_otel_config_v001"] = struct {
+		Name   string
+		Data   []byte
+		Labels map[string]string
+	}{Name: "pmcluster_otel_config_v001"}
+	f.configs["pmcluster_traefik_dynamic_v001"] = struct {
+		Name   string
+		Data   []byte
+		Labels map[string]string
+	}{Name: "pmcluster_traefik_dynamic_v001"}
 	for _, name := range pmclusterManagedNetworks {
 		f.networks[name] = struct {
 			Name       string
@@ -122,9 +126,9 @@ func TestDown_Purge_RemovesAllManagedResources(t *testing.T) {
 	}
 
 	// Two managed configs.
-	if len(res.ConfigsRemoved) != len(pmclusterManagedConfigs) {
-		t.Errorf("ConfigsRemoved = %v (len %d), want %d",
-			res.ConfigsRemoved, len(res.ConfigsRemoved), len(pmclusterManagedConfigs))
+	if len(res.ConfigsRemoved) != 2 {
+		t.Errorf("ConfigsRemoved = %v (len %d), want 2",
+			res.ConfigsRemoved, len(res.ConfigsRemoved))
 	}
 
 	// Two overlay networks.
