@@ -211,11 +211,14 @@ func TestRenderOTelCollectorConfig_ReceiverCreatorAttributes(t *testing.T) {
 	}
 
 	// Attributes must use quoted YAML strings with backtick expressions inside.
+	// Label references use function-call syntax: label("key") not label:key.
+	// In the YAML source, inner double quotes are escaped (\"). After YAML
+	// parsing the receiver_creator sees `label("com.docker.swarm.service.name")`.
 	for _, want := range []string{
 		`container.name:       "` + "`name`" + `"`,
 		`container.id:         "` + "`container_id`" + `"`,
-		`service.name:         "` + "`label:\\\"com.docker.swarm.service.name\\\"`" + `"`,
-		`service.namespace:    "` + "`label:\\\"com.docker.stack.namespace\\\"`" + `"`,
+		`service.name:         "` + "`label(\\\"com.docker.swarm.service.name\\\")`" + `"`,
+		`service.namespace:    "` + "`label(\\\"com.docker.stack.namespace\\\")`" + `"`,
 		`container.image.name: "` + "`image`" + `"`,
 	} {
 		if !strings.Contains(body, want) {
