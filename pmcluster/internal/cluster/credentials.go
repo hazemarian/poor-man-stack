@@ -30,6 +30,7 @@ type ManagedCredential struct {
 	SwarmSecretName    string
 	NewlyCreated       bool
 	SwarmSecretCreated bool
+	UsernameChanged    bool // true when username was updated on this bootstrap
 }
 
 type BootstrapInput struct {
@@ -106,11 +107,18 @@ type bootstrapSpec struct {
 func (m *CredentialsManager) ensure(ctx context.Context, spec bootstrapSpec) (*ManagedCredential, error) {
 	existing, err := m.Store.GetCredential(ctx, spec.name)
 	if err == nil {
+		username := existing.Username
+		usernameChanged := spec.username != "" && spec.username != existing.Username
+		if usernameChanged {
+			username = spec.username
+		}
+
 		plaintext, err := m.Cipher.Decrypt(existing.PasswordCiphertext)
 		if err != nil {
 			return nil, fmt.Errorf("decrypt %s: %w", spec.name, err)
 		}
-		secretPayload, err := serialisePassword(spec, existing.Username, string(plaintext))
+
+		secretPayload, err := serialisePassword(spec, username, string(plaintext))
 		if err != nil {
 			return nil, err
 		}
@@ -118,14 +126,23 @@ func (m *CredentialsManager) ensure(ctx context.Context, spec bootstrapSpec) (*M
 		if err != nil {
 			return nil, fmt.Errorf("ensure swarm secret %s: %w", existing.SwarmSecretName, err)
 		}
+
+		// Persist the updated username to the store if it changed.
+		if usernameChanged {
+			if updateErr := m.Store.UpdateCredentialUsername(ctx, spec.name, username); updateErr != nil {
+				return nil, fmt.Errorf("update username for %s: %w", spec.name, updateErr)
+			}
+		}
+
 		return &ManagedCredential{
 			Name:               existing.Name,
 			Kind:               CredentialKind(existing.Kind),
-			Username:           existing.Username,
+			Username:           username,
 			Password:           string(plaintext),
 			SwarmSecretName:    existing.SwarmSecretName,
 			NewlyCreated:       false,
 			SwarmSecretCreated: secretCreated,
+			UsernameChanged:    usernameChanged,
 		}, nil
 	}
 	if err != store.ErrCredentialNotFound {

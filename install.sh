@@ -71,6 +71,11 @@ fi
 
 echo
 echo "✅ pmcluster ${VERSION} installed at ${PREFIX}/pmcluster"
+# Ensure backup destination exists (bind mount in backup stack).
+if [ ! -d /var/backups/docker-volumes ]; then
+  mkdir -p /var/backups/docker-volumes 2>/dev/null || true
+fi
+
 echo
 "$PREFIX/pmcluster" version || true
 echo

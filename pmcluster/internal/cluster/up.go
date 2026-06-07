@@ -114,7 +114,11 @@ func Up(ctx context.Context, deps UpDeps, in UpInput) (*UpResult, error) {
 			res.NewSecrets = append(res.NewSecrets, c.SwarmSecretName)
 			fmt.Fprintf(out, "  ✓ %-20s already in store; Swarm secret %s recreated\n", name, c.SwarmSecretName)
 		default:
-			fmt.Fprintf(out, "  ✓ %-20s already present\n", name)
+			if c.UsernameChanged {
+				fmt.Fprintf(out, "  ✓ %-20s username updated to %s\n", name, c.Username)
+			} else {
+				fmt.Fprintf(out, "  ✓ %-20s already present\n", name)
+			}
 		}
 	}
 

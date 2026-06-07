@@ -82,6 +82,26 @@ func (s *Store) RotateCredential(ctx context.Context, name string, newCiphertext
 	return nil
 }
 
+// UpdateCredentialUsername changes the username for an existing credential.
+// Returns ErrCredentialNotFound if the row doesn't exist.
+func (s *Store) UpdateCredentialUsername(ctx context.Context, name string, newUsername string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE managed_credentials SET username = ? WHERE name = ?`,
+		newUsername, name,
+	)
+	if err != nil {
+		return fmt.Errorf("update credential username: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return ErrCredentialNotFound
+	}
+	return nil
+}
+
 // ListCredentials returns all credentials, sorted by name. Used by
 // `pmcluster credentials list`.
 func (s *Store) ListCredentials(ctx context.Context) ([]*ManagedCredential, error) {

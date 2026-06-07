@@ -155,6 +155,9 @@ func printUpResult(out io.Writer, in cluster.UpInput, res *cluster.UpResult) {
 			if c.NewlyCreated {
 				marker = "(NEW)"
 			}
+			if c.UsernameChanged {
+				marker = "(username updated)"
+			}
 			fmt.Fprintf(out, "   %s %s\n", name, marker)
 			fmt.Fprintf(out, "     user:     %s\n", c.Username)
 			fmt.Fprintf(out, "     password: %s\n", c.Password)
