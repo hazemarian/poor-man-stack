@@ -210,22 +210,22 @@ func TestRenderOTelCollectorConfig_ReceiverCreatorAttributes(t *testing.T) {
 		}
 	}
 
-	// Attributes must use unquoted backtick expressions.
+	// Attributes must use quoted YAML strings with backtick expressions inside.
 	for _, want := range []string{
-		"container.name:       `name`",
-		"container.id:         `container_id`",
-		`service.name:         ` + "`label:\"com.docker.swarm.service.name\"`",
-		`service.namespace:    ` + "`label:\"com.docker.stack.namespace\"`",
-		"container.image.name: `image`",
+		`container.name:       "` + "`name`" + `"`,
+		`container.id:         "` + "`container_id`" + `"`,
+		`service.name:         "` + "`label:\"com.docker.swarm.service.name\"`" + `"`,
+		`service.namespace:    "` + "`label:\"com.docker.stack.namespace\"`" + `"`,
+		`container.image.name: "` + "`image`" + `"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("rendered config missing expected attribute line: %q", want)
 		}
 	}
 
-	// Must NOT contain the old double-quoted format.
-	if strings.Contains(body, `"\`+"`name`"+`"`) {
-		t.Error("rendered config contains old double-quoted backtick format")
+	// Must NOT contain the old unquoted backtick format (invalid YAML).
+	if strings.Contains(body, "container.name:       `") {
+		t.Error("rendered config contains unquoted backtick — invalid YAML")
 	}
 }
 

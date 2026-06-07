@@ -107,18 +107,18 @@ receivers:
         rule: type == "container" and labels["io.otel.skip_file_logs"] != "true"
         config:
           include:
-            - /var/lib/docker/containers/__BT__container_id__BT__/__BT__container_id__BT__-json.log
+            - "/var/lib/docker/containers/__BT__container_id__BT__/__BT__container_id__BT__-json.log"
           exclude:
-            - /var/lib/docker/containers/*otel-collector*/*-json.log
+            - "/var/lib/docker/containers/*otel-collector*/*-json.log"
           include_file_name: false
           start_at: end
           storage: null
           attributes:
-            container.name:       __BT__name__BT__
-            container.id:         __BT__container_id__BT__
-            service.name:         __BT__label:__QT__com.docker.swarm.service.name__QT____BT__
-            service.namespace:    __BT__label:__QT__com.docker.stack.namespace__QT____BT__
-            container.image.name: __BT__image__BT__
+            container.name:       "__BT__name__BT__"
+            container.id:         "__BT__container_id__BT__"
+            service.name:         "__BT__label:__QT__com.docker.swarm.service.name__QT____BT__"
+            service.namespace:    "__BT__label:__QT__com.docker.stack.namespace__QT____BT__"
+            container.image.name: "__BT__image__BT__"
           operators:
             - type: json_parser
               timestamp:
