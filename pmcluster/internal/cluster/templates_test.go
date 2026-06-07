@@ -189,6 +189,46 @@ func TestRenderOTelCollectorConfig_NoiseFilterInPipeline(t *testing.T) {
 	}
 }
 
+// TestRenderOTelCollectorConfig_ReceiverCreatorAttributes verifies that
+// receiver_creator attributes use unquoted backtick expressions (not
+// double-quoted backtick strings) so the collector can parse them.
+func TestRenderOTelCollectorConfig_ReceiverCreatorAttributes(t *testing.T) {
+	in := RenderInput{
+		OpenObserveAdminEmail:    "admin@x.com",
+		OpenObserveAdminPassword: "pw",
+	}
+	data, err := RenderOTelCollectorConfig(in)
+	if err != nil {
+		t.Fatalf("RenderOTelCollectorConfig: %v", err)
+	}
+	body := string(data)
+
+	// Placeholders must be fully substituted.
+	for _, ph := range []string{"__BT__", "__QT__"} {
+		if strings.Contains(body, ph) {
+			t.Errorf("placeholder %q was not substituted", ph)
+		}
+	}
+
+	// Attributes must use unquoted backtick expressions.
+	for _, want := range []string{
+		"container.name:       `name`",
+		"container.id:         `container_id`",
+		`service.name:         ` + "`label:\"com.docker.swarm.service.name\"`",
+		`service.namespace:    ` + "`label:\"com.docker.stack.namespace\"`",
+		"container.image.name: `image`",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rendered config missing expected attribute line: %q", want)
+		}
+	}
+
+	// Must NOT contain the old double-quoted format.
+	if strings.Contains(body, `"\`+"`name`"+`"`) {
+		t.Error("rendered config contains old double-quoted backtick format")
+	}
+}
+
 // TestRenderTraefikDynamic_SubstitutesDomain verifies that __DOMAIN__ is
 // replaced with the supplied Domain value.
 func TestRenderTraefikDynamic_SubstitutesDomain(t *testing.T) {
