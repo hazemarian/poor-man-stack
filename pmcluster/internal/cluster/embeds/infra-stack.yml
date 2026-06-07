@@ -12,7 +12,7 @@ services:
       - "--entrypoints.websecure.http.tls=true"
       - "--providers.file.filename=/etc/traefik/dynamic/conf.yml"
       - "--providers.file.watch=true"
-      - "--providers.docker.network=traefik-net"
+      - "--providers.docker=false"
       - "--accesslog=false"
       - "--accesslog.format=json"
       - "--log.level=INFO"

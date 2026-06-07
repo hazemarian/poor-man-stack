@@ -376,8 +376,8 @@ func TestCORSOriginRegex_RejectsBadDomain(t *testing.T) {
 }
 
 // TestRenderTraefikDynamic_CORSWired verifies the rendered dynamic config
-// contains the cors-default middleware (with the per-domain regex) and
-// that the pmcluster router includes it in its middlewares chain.
+// contains the cors-default middleware and the pmcluster router includes
+// it in its middlewares chain.
 func TestRenderTraefikDynamic_CORSWired(t *testing.T) {
 	in := RenderInput{Domain: "example.com"}
 	data, err := RenderTraefikDynamic(in)
@@ -389,32 +389,31 @@ func TestRenderTraefikDynamic_CORSWired(t *testing.T) {
 	if !strings.Contains(body, "cors-default:") {
 		t.Errorf("rendered config missing cors-default middleware:\n%s", body)
 	}
-	wantRegex := CORSOriginRegex("example.com")
-	if !strings.Contains(body, wantRegex) {
-		t.Errorf("rendered config missing expected origin regex %q:\n%s", wantRegex, body)
+	if !strings.Contains(body, `Access-Control-Allow-Origin: "https://example.com"`) {
+		t.Errorf("rendered config missing domain-based origin in cors-default:\n%s", body)
 	}
 	if !strings.Contains(body, "- cors-default") {
 		t.Errorf("rendered config missing cors-default in router middlewares list:\n%s", body)
 	}
-	if !strings.Contains(body, "accessControlAllowCredentials: true") {
-		t.Errorf("rendered config missing accessControlAllowCredentials: true:\n%s", body)
+	if !strings.Contains(body, `Access-Control-Allow-Credentials: "true"`) {
+		t.Errorf("rendered config missing Access-Control-Allow-Credentials:\n%s", body)
 	}
 }
 
-// TestRenderTraefikDynamic_CORSOverride verifies that an explicit
-// CORSOriginRegex on RenderInput takes precedence over the derived one.
+// TestRenderTraefikDynamic_CORSOverride verifies that changing the domain
+// updates the Access-Control-Allow-Origin header.
 func TestRenderTraefikDynamic_CORSOverride(t *testing.T) {
-	in := RenderInput{Domain: "example.com", CORSOriginRegex: "^https://only.this.com$"}
+	in := RenderInput{Domain: "other.com"}
 	data, err := RenderTraefikDynamic(in)
 	if err != nil {
 		t.Fatalf("RenderTraefikDynamic: %v", err)
 	}
 	body := string(data)
-	if !strings.Contains(body, "^https://only.this.com$") {
-		t.Errorf("override regex not present:\n%s", body)
+	if !strings.Contains(body, `Access-Control-Allow-Origin: "https://other.com"`) {
+		t.Errorf("override origin not present:\n%s", body)
 	}
-	if strings.Contains(body, CORSOriginRegex("example.com")) {
-		t.Errorf("derived regex should not appear when override is set")
+	if strings.Contains(body, `Access-Control-Allow-Origin: "https://example.com"`) {
+		t.Errorf("old domain should not appear")
 	}
 }
 
