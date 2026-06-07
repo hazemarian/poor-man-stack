@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/auth"
+	"github.com/hazemarian/poor-man-stack/pmcluster/internal/buildinfo"
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/cluster"
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/config"
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/store"
@@ -74,7 +75,7 @@ func runInit(cmd *cobra.Command, _ []string) error {
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Seeding config templates to %s\n", cfg.ConfigDir())
-	if err := cluster.EnsureConfigDir(cfg.ConfigDir()); err != nil {
+	if err := cluster.EnsureConfigDir(cfg.ConfigDir(), buildinfo.Version); err != nil {
 		return fmt.Errorf("seed config dir: %w", err)
 	}
 

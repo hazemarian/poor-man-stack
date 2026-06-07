@@ -165,27 +165,51 @@ func RenderTraefikDynamic(in RenderInput) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
+// configVersionHeader matches the first-line version comment in every
+// embedded config file. Group 1 captures the version string (e.g. "v0.1.12").
+var configVersionHeader = regexp.MustCompile(`^## pmcluster-config-version: (.+)$`)
+
 // EnsureConfigDir creates ~/.pmcluster/config/ and seeds it with the
-// embedded defaults for any files that don't already exist.
-// Existing files are never overwritten — operator edits win.
-func EnsureConfigDir(configDir string) error {
+// embedded defaults. When a file already exists on disk, its first-line
+// version comment is compared against the current build version. If the
+// disk copy is older (or missing a version), it's overwritten; otherwise
+// operator edits are preserved.
+func EnsureConfigDir(configDir string, version string) error {
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		return fmt.Errorf("create config dir %s: %w", configDir, err)
 	}
 	for _, name := range ConfigFileNames {
 		dest := filepath.Join(configDir, name)
-		if _, err := os.Stat(dest); err == nil {
-			continue // already exists — keep user's version
+		if data, err := os.ReadFile(dest); err == nil {
+			if !shouldOverwriteConfig(data, version) {
+				continue
+			}
 		}
 		body, err := fs.ReadFile(embeddedStacks, embeddedDir+"/"+name)
 		if err != nil {
 			return fmt.Errorf("read embedded %s: %w", name, err)
 		}
-		if err := os.WriteFile(dest, body, 0o644); err != nil {
+		// Inject the actual build version into the placeholder.
+		seeded := strings.Replace(string(body), "__PMCONFIG_VERSION__", version, 1)
+		if err := os.WriteFile(dest, []byte(seeded), 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", dest, err)
 		}
 	}
 	return nil
+}
+
+// shouldOverwriteConfig returns true when the on-disk config is stale
+// relative to the current build version. A config without a recognised
+// version header is treated as stale so it's upgraded on first init
+// after this feature lands.
+func shouldOverwriteConfig(disk []byte, currentVersion string) bool {
+	firstLine, _, _ := strings.Cut(string(disk), "\n")
+	matches := configVersionHeader.FindStringSubmatch(strings.TrimSpace(firstLine))
+	if len(matches) < 2 {
+		return true // no version header — overwrite to add one
+	}
+	diskVersion := matches[1]
+	return Compare(diskVersion, currentVersion) < 0
 }
 
 // validDomain matches a DNS host: dot-separated labels of letters,
@@ -197,6 +221,54 @@ var validDomain = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9]
 // https://<domain> and https://<any-subdomain>.<domain>. Falls back to
 // a never-match pattern when domain is empty or malformed so the
 // middleware never inadvertently opens up "*".
+// Compare compares two npm-like semver strings (vM.m.p or M.m.p).
+// Returns -1 if a < b, 0 if equal, 1 if a > b. Pre-release tags and
+// build metadata are not handled — we only ship tagged releases.
+func Compare(a, b string) int {
+	// Strip leading 'v' so both "v0.1.12" and "0.1.12" compare correctly.
+	normalize := strings.TrimPrefix(a, "v")
+	normalizeB := strings.TrimPrefix(b, "v")
+
+	partsA := strings.Split(normalize, ".")
+	partsB := strings.Split(normalizeB, ".")
+
+	maxLen := len(partsA)
+	if len(partsB) > maxLen {
+		maxLen = len(partsB)
+	}
+
+	for i := 0; i < maxLen; i++ {
+		var numA, numB int
+		if i < len(partsA) {
+			numA = parseSegment(partsA[i])
+		}
+		if i < len(partsB) {
+			numB = parseSegment(partsB[i])
+		}
+		if numA < numB {
+			return -1
+		}
+		if numA > numB {
+			return 1
+		}
+	}
+	return 0
+}
+
+// parseSegment converts a version segment to an int, ignoring any
+// trailing pre-release suffix (e.g. "12-alpha" → 12).
+func parseSegment(s string) int {
+	// Take only leading digits.
+	var n int
+	for _, ch := range s {
+		if ch < '0' || ch > '9' {
+			break
+		}
+		n = n*10 + int(ch-'0')
+	}
+	return n
+}
+
 func CORSOriginRegex(domain string) string {
 	if !validDomain.MatchString(domain) {
 		// Match nothing — callers should validate Domain upstream;

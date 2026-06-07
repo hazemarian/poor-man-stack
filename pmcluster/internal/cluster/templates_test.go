@@ -448,3 +448,60 @@ func TestLoadComposeFile_InfraBYOMode(t *testing.T) {
 		}
 	}
 }
+
+// TestCompare_Versions exercises the semver comparison used by
+// EnsureConfigDir to decide whether a disk config is stale.
+func TestCompare_Versions(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want int
+	}{
+		{"v0.1.12", "v0.1.12", 0},
+		{"v0.1.12", "v0.1.11", 1},
+		{"v0.1.11", "v0.1.12", -1},
+		{"v0.2.0", "v0.1.99", 1},
+		{"v1.0.0", "v0.99.99", 1},
+		{"v0.1.11", "0.1.12", -1},       // leading v optional
+		{"dev", "v0.1.0", -1},            // "dev" → [0], "v0.1.0" → [0,1,0], so dev < 0.1.0
+		{"v0.10.0", "v0.2.0", 1},         // 10 > 2 numerically
+		{"v0.1.12-alpha", "v0.1.11", 1},   // pre-release ignored, 12 > 11
+	}
+	for _, tt := range tests {
+		got := Compare(tt.a, tt.b)
+		if got != tt.want {
+			t.Errorf("Compare(%q, %q) = %d, want %d", tt.a, tt.b, got, tt.want)
+		}
+	}
+}
+
+// TestShouldOverwriteConfig_StaleOrMissing exercises the version-based
+// overwrite decision logic.
+func TestShouldOverwriteConfig_StaleOrMissing(t *testing.T) {
+	t.Run("missing version header", func(t *testing.T) {
+		old := []byte("version: \"3.9\"\nservices:\n  foo:\n")
+		if !shouldOverwriteConfig(old, "v0.1.12") {
+			t.Error("file with no version header should be overwritten")
+		}
+	})
+
+	t.Run("older version", func(t *testing.T) {
+		old := []byte("## pmcluster-config-version: v0.1.9\nversion: \"3.9\"\n")
+		if !shouldOverwriteConfig(old, "v0.1.12") {
+			t.Error("file with older version should be overwritten")
+		}
+	})
+
+	t.Run("same version", func(t *testing.T) {
+		old := []byte("## pmcluster-config-version: v0.1.12\nversion: \"3.9\"\n")
+		if shouldOverwriteConfig(old, "v0.1.12") {
+			t.Error("file with same version should NOT be overwritten")
+		}
+	})
+
+	t.Run("newer version", func(t *testing.T) {
+		old := []byte("## pmcluster-config-version: v0.2.0\nversion: \"3.9\"\n")
+		if shouldOverwriteConfig(old, "v0.1.12") {
+			t.Error("file with newer version should NOT be overwritten")
+		}
+	})
+}

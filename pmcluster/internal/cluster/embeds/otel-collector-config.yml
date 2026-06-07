@@ -1,3 +1,4 @@
+## pmcluster-config-version: __PMCONFIG_VERSION__
 extensions:
   health_check:
 
