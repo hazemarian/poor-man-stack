@@ -27,7 +27,13 @@ esac
 
 if [ "$VERSION" = "latest" ]; then
   echo "→ Resolving latest release from github.com/${REPO}"
-  VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+  API_RESPONSE=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest")
+  if [ -z "$API_RESPONSE" ]; then
+    echo "could not reach GitHub API (rate-limited or network error). Try:" >&2
+    echo "  curl -fsSL .../install.sh | VERSION=v0.0.1 bash" >&2
+    exit 1
+  fi
+  VERSION=$(echo "$API_RESPONSE" \
     | grep -m1 '"tag_name"' \
     | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
   if [ -z "$VERSION" ]; then
