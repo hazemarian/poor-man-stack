@@ -55,7 +55,9 @@ func EnsureConfig(ctx context.Context, d docker.Client, name string, data []byte
 		return false, fmt.Errorf("check config %s: %w", name, err)
 	}
 	if exists {
-		return false, nil
+		if err := d.ConfigRemove(ctx, name); err != nil {
+			return false, fmt.Errorf("remove existing config %s: %w", name, err)
+		}
 	}
 	err = d.ConfigCreate(ctx, docker.ConfigSpec{
 		Name: name,

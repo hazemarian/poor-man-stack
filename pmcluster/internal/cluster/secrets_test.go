@@ -170,7 +170,7 @@ func TestEnsureConfig_CreatesWhenMissing(t *testing.T) {
 	}
 }
 
-func TestEnsureConfig_NoOpWhenPreExisting(t *testing.T) {
+func TestEnsureConfig_RecreatesWhenPreExisting(t *testing.T) {
 	f := newFakeDocker()
 	f.configs["otel_config"] = struct {
 		Name   string
@@ -178,15 +178,19 @@ func TestEnsureConfig_NoOpWhenPreExisting(t *testing.T) {
 		Labels map[string]string
 	}{Name: "otel_config", Data: []byte("original")}
 
-	created, err := EnsureConfig(context.Background(), f, "otel_config", []byte("replacement"))
+	changed, err := EnsureConfig(context.Background(), f, "otel_config", []byte("new config data"))
 	if err != nil {
 		t.Fatalf("EnsureConfig: %v", err)
 	}
-	if created {
-		t.Error("created = true, want false for pre-existing config")
+	if !changed {
+		t.Error("changed = false, want true — config should be recreated with new data")
 	}
-	if string(f.configs["otel_config"].Data) != "original" {
-		t.Error("EnsureConfig modified existing config data")
+	if string(f.configs["otel_config"].Data) != "new config data" {
+		t.Errorf("config data = %q, want 'new config data'", f.configs["otel_config"].Data)
+	}
+	// Old config must have been removed first.
+	if len(f.removedConfigs) != 1 || f.removedConfigs[0] != "otel_config" {
+		t.Errorf("removedConfigs = %v, want [otel_config]", f.removedConfigs)
 	}
 }
 
