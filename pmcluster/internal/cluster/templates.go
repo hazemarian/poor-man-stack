@@ -153,6 +153,14 @@ processors:
     detectors: [system, docker]
     override: false
 
+  filter/noise:
+    error_mode: ignore
+    logs:
+      log_record:
+        - 'not IsMatch(body, "ELB-HealthChecker/2.0")'
+        - 'not IsMatch(body, "kube-probe")'
+        - 'not (IsMatch(body, "GET /health HTTP") and attributes["stream"] == "stdout")'
+
   transform:
     error_mode: ignore
     log_statements:
@@ -162,10 +170,6 @@ processors:
           - set(attributes["service.namespace"], "standalone") where attributes["service.namespace"] == "" or attributes["service.namespace"] == nil
       - context: log
         statements:
-          # Noise filtering
-          - drop() where IsMatch(body, "ELB-HealthChecker/2.0")
-          - drop() where IsMatch(body, "kube-probe")
-          - drop() where IsMatch(body, "GET /health HTTP") and attributes["stream"] == "stdout"
           # Severity from Docker stream
           - set(attributes["severity_text"], "INFO")  where attributes["stream"] == "stdout"
           - set(attributes["severity_number"], 9)     where attributes["stream"] == "stdout"
@@ -206,7 +210,7 @@ service:
   pipelines:
     logs:
       receivers:  [receiver_creator, otlp]
-      processors: [resource, transform, batch]
+      processors: [resource, filter/noise, transform, batch]
       exporters:  [otlp/openobserve]
     metrics:
       receivers:  [docker_stats, otlp]

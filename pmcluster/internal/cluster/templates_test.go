@@ -149,6 +149,46 @@ func TestRenderOTelCollectorConfig_MissingPassword(t *testing.T) {
 	}
 }
 
+// TestRenderOTelCollectorConfig_NoiseFilterInPipeline verifies the rendered
+// config uses a filter/noise processor (with valid OTTL) instead of the
+// invalid drop() function in transform log_statements.
+func TestRenderOTelCollectorConfig_NoiseFilterInPipeline(t *testing.T) {
+	in := RenderInput{
+		OpenObserveAdminEmail:    "admin@x.com",
+		OpenObserveAdminPassword: "pw",
+	}
+	data, err := RenderOTelCollectorConfig(in)
+	if err != nil {
+		t.Fatalf("RenderOTelCollectorConfig: %v", err)
+	}
+	body := string(data)
+
+	// The transform processor must NOT contain drop() — that function only
+	// exists in the filter processor.
+	if strings.Contains(body, "drop()") {
+		t.Error("transform processor must not contain drop(); noise filtering belongs in filter/noise")
+	}
+
+	// The filter/noise processor must exist with valid OTTL filter expressions.
+	if !strings.Contains(body, "filter/noise:") {
+		t.Error("missing filter/noise processor")
+	}
+	for _, want := range []string{
+		`not IsMatch(body, "ELB-HealthChecker/2.0")`,
+		`not IsMatch(body, "kube-probe")`,
+		`not (IsMatch(body, "GET /health HTTP")`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("filter/noise missing expression containing %q", want)
+		}
+	}
+
+	// The logs pipeline must place filter/noise before transform.
+	if !strings.Contains(body, "[resource, filter/noise, transform, batch]") {
+		t.Error("logs pipeline must include filter/noise before transform")
+	}
+}
+
 // TestRenderTraefikDynamic_SubstitutesDomain verifies that __DOMAIN__ is
 // replaced with the supplied Domain value.
 func TestRenderTraefikDynamic_SubstitutesDomain(t *testing.T) {
