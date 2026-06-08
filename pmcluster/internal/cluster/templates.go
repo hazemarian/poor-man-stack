@@ -72,6 +72,14 @@ type RenderInput struct {
 	// Traefik dynamic file-provider config. Substituted as
 	// __TRAEFIK_CONFIG_NAME__ in compose files.
 	TraefikConfigName string
+
+	// CertSecretName is the versioned Swarm secret name for the TLS
+	// certificate (e.g. cert_v001). Substituted as __CERT_SECRET__.
+	CertSecretName string
+
+	// KeySecretName is the versioned Swarm secret name for the TLS
+	// private key (e.g. key_v001). Substituted as __KEY_SECRET__.
+	KeySecretName string
 }
 
 // readConfigFile loads a named file. When in.ConfigDir is set the disk
@@ -120,6 +128,8 @@ func LoadComposeFile(name stackName, in RenderInput) ([]byte, error) {
 	out = strings.ReplaceAll(out, "__OPENOBSERVE_PASSWORD__", in.OpenObserveAdminPassword)
 	out = strings.ReplaceAll(out, "__OTEL_CONFIG_NAME__", in.OTelConfigName)
 	out = strings.ReplaceAll(out, "__TRAEFIK_CONFIG_NAME__", in.TraefikConfigName)
+	out = strings.ReplaceAll(out, "__CERT_SECRET__", in.CertSecretName)
+	out = strings.ReplaceAll(out, "__KEY_SECRET__", in.KeySecretName)
 	return []byte(out), nil
 }
 

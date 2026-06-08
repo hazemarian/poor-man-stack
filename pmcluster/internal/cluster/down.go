@@ -27,15 +27,12 @@ type DownDeps struct {
 	Stdout   io.Writer
 }
 
-// pmclusterManagedSecrets is enumerated explicitly (not "anything with
-// the pmcluster label") so a mislabelled operator secret can't be
-// accidentally purged.
+// pmclusterManagedSecrets lists non-versioned secrets. Versioned secrets
+// (cert_v*, key_v*) are discovered via label and removed separately.
 var pmclusterManagedSecrets = []string{
 	"admin_credentials",
 	"portainer_admin_password",
 	"zo_root_user_password",
-	"cert",
-	"key",
 }
 
 var pmclusterManagedNetworks = []string{
@@ -80,6 +77,20 @@ func Down(ctx context.Context, deps DownDeps, in DownInput) (*DownResult, error)
 			continue
 		}
 		res.SecretsRemoved = append(res.SecretsRemoved, name)
+	}
+
+	// Remove versioned cert/key secrets (cert_v001, key_v001, etc.)
+	allSecrets, err := deps.Docker.SecretList(ctx, pmclusterLabel, "true")
+	if err != nil {
+		fmt.Fprintf(out, "  ⚠ secret list: %v\n", err)
+	} else {
+		for _, name := range allSecrets {
+			if rmErr := deps.Docker.SecretRemove(ctx, name); rmErr != nil {
+				fmt.Fprintf(out, "  ⚠ %s: %v\n", name, rmErr)
+				continue
+			}
+			res.SecretsRemoved = append(res.SecretsRemoved, name)
+		}
 	}
 
 	step("Purging pmcluster-managed Docker configs")

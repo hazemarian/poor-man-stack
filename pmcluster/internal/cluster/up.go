@@ -68,22 +68,20 @@ func Up(ctx context.Context, deps UpDeps, in UpInput) (*UpResult, error) {
 	}
 	res.NewNetworks = created
 
+	var certSecret, keySecret string
 	if in.ACMEEmail != "" {
 		step("TLS via Let's Encrypt (Traefik HTTP-01) — port 80 must be reachable from the internet")
 	} else {
 		step("Loading TLS cert/key into Swarm secrets")
-		for _, t := range []struct{ name, path string }{
-			{"cert", in.CertPath},
-			{"key", in.KeyPath},
-		} {
-			isNew, err := EnsureSecretFromFile(ctx, deps.Docker, t.name, t.path)
-			if err != nil {
-				return res, fmt.Errorf("ensure secret %s from %s: %w", t.name, t.path, err)
-			}
-			if isNew {
-				res.NewSecrets = append(res.NewSecrets, t.name)
-			}
+		certSecret, err = EnsureVersionedSecretFromFile(ctx, deps.Docker, "cert", in.CertPath)
+		if err != nil {
+			return res, fmt.Errorf("ensure cert secret: %w", err)
 		}
+		keySecret, err = EnsureVersionedSecretFromFile(ctx, deps.Docker, "key", in.KeyPath)
+		if err != nil {
+			return res, fmt.Errorf("ensure key secret: %w", err)
+		}
+		res.NewSecrets = append(res.NewSecrets, certSecret, keySecret)
 	}
 
 	step("Bootstrapping managed credentials (Traefik / Portainer / OpenObserve)")
@@ -133,6 +131,8 @@ func Up(ctx context.Context, deps UpDeps, in UpInput) (*UpResult, error) {
 		OpenObserveAdminPassword: openobsCred.Password,
 		ACMEEmail:                in.ACMEEmail,
 		ConfigDir:                in.ConfigDir,
+		CertSecretName:           certSecret,
+		KeySecretName:            keySecret,
 	}
 
 	otelYAML, err := RenderOTelCollectorConfig(render)

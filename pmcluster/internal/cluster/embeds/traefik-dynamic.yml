@@ -40,11 +40,11 @@ http:
 [[- if not .ACMEEmail]]
 tls:
   certificates:
-    - certFile: /run/secrets/cert
-      keyFile: /run/secrets/key
+    - certFile: /run/secrets/[[.CertSecretName]]
+      keyFile: /run/secrets/[[.KeySecretName]]
   stores:
     default:
       defaultCertificate:
-        certFile: /run/secrets/cert
-        keyFile: /run/secrets/key
+        certFile: /run/secrets/[[.CertSecretName]]
+        keyFile: /run/secrets/[[.KeySecretName]]
 [[- end]]

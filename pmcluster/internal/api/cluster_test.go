@@ -50,6 +50,9 @@ func (f *inMemoryDockerClient) ConfigCreate(_ context.Context, _ docker.ConfigSp
 	return nil
 }
 func (f *inMemoryDockerClient) SecretRemove(_ context.Context, _ string) error  { return nil }
+func (f *inMemoryDockerClient) SecretList(_ context.Context, _, _ string) ([]string, error) {
+	return nil, nil
+}
 func (f *inMemoryDockerClient) ConfigRemove(_ context.Context, _ string) error  { return nil }
 func (f *inMemoryDockerClient) NetworkRemove(_ context.Context, _ string) error { return nil }
 func (f *inMemoryDockerClient) ServiceList(_ context.Context) ([]docker.Service, error) {

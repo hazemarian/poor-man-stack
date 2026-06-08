@@ -48,6 +48,67 @@ func EnsureSecretFromFile(ctx context.Context, d docker.Client, name, path strin
 	return EnsureSecret(ctx, d, name, data)
 }
 
+// EnsureVersionedSecretFromFile reads a file and creates a versioned Swarm
+// secret (e.g. cert_v001, cert_v002). Returns the versioned name.
+func EnsureVersionedSecretFromFile(ctx context.Context, d docker.Client, baseName, path string) (versionedName string, err error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", path, err)
+	}
+	return EnsureVersionedSecret(ctx, d, baseName, data)
+}
+
+// EnsureVersionedSecret creates a versioned Swarm secret (e.g. cert_v001)
+// and garbage-collects old versions. Same pattern as EnsureConfig.
+func EnsureVersionedSecret(ctx context.Context, d docker.Client, baseName string, data []byte) (versionedName string, err error) {
+	existing, err := d.SecretList(ctx, pmclusterLabel, "true")
+	if err != nil {
+		return "", fmt.Errorf("list secrets: %w", err)
+	}
+
+	prefix := baseName + "_v"
+	maxVer := 0
+	for _, name := range existing {
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		var v int
+		if _, scanErr := fmt.Sscanf(name, prefix+"%d", &v); scanErr == nil && v > maxVer {
+			maxVer = v
+		}
+	}
+
+	newVer := maxVer + 1
+	versionedName = fmt.Sprintf("%s_v%03d", baseName, newVer)
+
+	err = d.SecretCreate(ctx, docker.SecretSpec{
+		Name: versionedName,
+		Data: data,
+		Labels: map[string]string{
+			pmclusterLabel:  "true",
+			"pmcluster.base": baseName,
+		},
+	})
+	if err != nil {
+		return "", fmt.Errorf("create secret %s: %w", versionedName, err)
+	}
+
+	// GC old versions.
+	for _, name := range existing {
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		if name == versionedName {
+			continue
+		}
+		if rmErr := d.SecretRemove(ctx, name); rmErr != nil {
+			_ = rmErr // old secret may still be in use; GC next time
+		}
+	}
+
+	return versionedName, nil
+}
+
 // EnsureConfig is the Docker-config analogue of EnsureSecret. Because Docker
 // configs are immutable, we create a versioned name (e.g.
 // pmcluster_otel_config_v001) and let the caller embed the versioned name

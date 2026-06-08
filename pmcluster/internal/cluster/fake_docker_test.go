@@ -151,6 +151,14 @@ func (f *fakeDocker) NetworkRemove(_ context.Context, name string) error {
 	return nil
 }
 
+func (f *fakeDocker) SecretList(_ context.Context, _, _ string) ([]string, error) {
+	names := make([]string, 0, len(f.secrets))
+	for n := range f.secrets {
+		names = append(names, n)
+	}
+	return names, nil
+}
+
 func (f *fakeDocker) ConfigList(_ context.Context, _, _ string) ([]string, error) {
 	names := make([]string, 0, len(f.configs))
 	for n := range f.configs {

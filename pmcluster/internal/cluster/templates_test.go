@@ -278,7 +278,7 @@ func TestRenderTraefikDynamic_ACMEMode(t *testing.T) {
 // TestRenderTraefikDynamic_BYOMode verifies the legacy path stays intact
 // when ACMEEmail is empty.
 func TestRenderTraefikDynamic_BYOMode(t *testing.T) {
-	in := RenderInput{Domain: "x.example.com"}
+	in := RenderInput{Domain: "x.example.com", CertSecretName: "cert_v001", KeySecretName: "key_v001"}
 	data, err := RenderTraefikDynamic(in)
 	if err != nil {
 		t.Fatalf("RenderTraefikDynamic: %v", err)
@@ -287,7 +287,7 @@ func TestRenderTraefikDynamic_BYOMode(t *testing.T) {
 	if strings.Contains(body, "certResolver") {
 		t.Errorf("BYO mode must not emit certResolver:\n%s", body)
 	}
-	if !strings.Contains(body, "/run/secrets/cert") || !strings.Contains(body, "/run/secrets/key") {
+	if !strings.Contains(body, "/run/secrets/cert_v001") || !strings.Contains(body, "/run/secrets/key_v001") {
 		t.Errorf("BYO mode must reference static cert/key secrets:\n%s", body)
 	}
 }
@@ -428,7 +428,11 @@ func mustCompile(t *testing.T, pat string) *regexp.Regexp {
 
 // TestLoadComposeFile_InfraBYOMode verifies the legacy operator-cert path.
 func TestLoadComposeFile_InfraBYOMode(t *testing.T) {
-	body, err := LoadComposeFile(StackInfra, RenderInput{Domain: "x.example.com"})
+	body, err := LoadComposeFile(StackInfra, RenderInput{
+		Domain:         "x.example.com",
+		CertSecretName: "cert_v001",
+		KeySecretName:  "key_v001",
+	})
 	if err != nil {
 		t.Fatalf("LoadComposeFile: %v", err)
 	}
@@ -440,8 +444,8 @@ func TestLoadComposeFile_InfraBYOMode(t *testing.T) {
 		t.Errorf("BYO-mode infra stack must not declare the ACME volume")
 	}
 	for _, want := range []string{
-		"  cert:\n    external: true",
-		"  key:\n    external: true",
+		"  cert_v001:\n    external: true",
+		"  key_v001:\n    external: true",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("BYO-mode infra stack missing %q", want)

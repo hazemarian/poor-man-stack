@@ -91,6 +91,13 @@ func (f *fakeClient) NetworkRemove(_ context.Context, name string) error {
 func (f *fakeClient) NodeList(_ context.Context) ([]Node, error)          { return nil, nil }
 func (f *fakeClient) ServiceList(_ context.Context) ([]Service, error)    { return nil, nil }
 func (f *fakeClient) JoinTokens(_ context.Context) (JoinTokens, error)    { return JoinTokens{}, nil }
+func (f *fakeClient) SecretList(_ context.Context, _, _ string) ([]string, error) {
+	names := make([]string, 0, len(f.secrets))
+	for n := range f.secrets {
+		names = append(names, n)
+	}
+	return names, nil
+}
 func (f *fakeClient) ConfigList(_ context.Context, _, _ string) ([]string, error) {
 	names := make([]string, 0, len(f.configs))
 	for n := range f.configs {

@@ -91,8 +91,8 @@ services:
     secrets:
       - admin_credentials
       [[- if not .ACMEEmail]]
-      - cert
-      - key
+      - __CERT_SECRET__
+      - __KEY_SECRET__
       [[- end]]
 
   # Portainer Management
@@ -151,9 +151,9 @@ secrets:
   portainer_admin_password:
     external: true
   [[- if not .ACMEEmail]]
-  cert:
+  __CERT_SECRET__:
     external: true
-  key:
+  __KEY_SECRET__:
     external: true
   [[- end]]
 

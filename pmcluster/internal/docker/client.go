@@ -41,6 +41,10 @@ type Client interface {
 	NodeList(ctx context.Context) ([]Node, error)
 	JoinTokens(ctx context.Context) (JoinTokens, error)
 
+	// SecretList returns all secret names with the given label filter.
+	// labelKey="" means no filter.
+	SecretList(ctx context.Context, labelKey, labelValue string) ([]string, error)
+
 	// ConfigList returns all config names with the given label filter.
 	// labelKey="" means no filter.
 	ConfigList(ctx context.Context, labelKey, labelValue string) ([]string, error)
@@ -332,6 +336,23 @@ func (r *realClient) JoinTokens(ctx context.Context) (JoinTokens, error) {
 		Worker:  sw.JoinTokens.Worker,
 		Manager: sw.JoinTokens.Manager,
 	}, nil
+}
+
+func (r *realClient) SecretList(ctx context.Context, labelKey, labelValue string) ([]string, error) {
+	opts := swarm.SecretListOptions{}
+	if labelKey != "" {
+		opts.Filters = filters.NewArgs()
+		opts.Filters.Add("label", labelKey+"="+labelValue)
+	}
+	secrets, err := r.c.SecretList(ctx, opts)
+	if err != nil {
+		return nil, fmt.Errorf("secret list: %w", err)
+	}
+	names := make([]string, 0, len(secrets))
+	for _, s := range secrets {
+		names = append(names, s.Spec.Name)
+	}
+	return names, nil
 }
 
 func (r *realClient) ConfigList(ctx context.Context, labelKey, labelValue string) ([]string, error) {
