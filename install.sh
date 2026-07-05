@@ -5,6 +5,13 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/hazemarian/poor-man-stack/main/install.sh | bash
 #   curl -fsSL https://raw.githubusercontent.com/hazemarian/poor-man-stack/main/install.sh | VERSION=v0.2.0 bash
+#
+# Optional env vars:
+#   VERSION=v0.2.0          pin a specific release (default: latest)
+#   PREFIX=/opt/bin         install location (default: /usr/local/bin)
+#   PMCLUSTER_USER=deployer systemd service user (default: auto-detected)
+#   PMCLUSTER_REGISTRY=host=user=token,...  auto-configure registries
+#     (GHCR: PMCLUSTER_REGISTRY=ghcr.io=USERNAME=ghp_...)
 
 set -euo pipefail
 
@@ -80,6 +87,51 @@ echo
 "$PREFIX/pmcluster" version || true
 echo
 
+# --- Auto-configure registries (if PMCLUSTER_REGISTRY is set) ---
+configure_registries() {
+  local spec="${1:-}"
+  [ -z "$spec" ] && return
+
+  # Split on comma: host=user=token,host2=user2=token2,...
+  IFS=',' read -ra ENTRIES <<<"$spec"
+  for entry in "${ENTRIES[@]}"; do
+    # Trim whitespace.
+    entry="$(echo "$entry" | xargs)"
+    [ -z "$entry" ] && continue
+
+    # Parse host, user, token (token is everything after the second =).
+    host="${entry%%=*}"
+    rest="${entry#*=}"
+    user="${rest%%=*}"
+    token="${rest#*=}"
+
+    if [ -z "$host" ] || [ -z "$user" ] || [ -z "$token" ]; then
+      echo "⚠  Skipping malformed registry entry: $entry (expect host=user=token)" >&2
+      continue
+    fi
+
+    # docker login: bad credentials fail loud.
+    echo "→ Logging in to $host as $user"
+    if ! echo "$token" | docker login "$host" -u "$user" --password-stdin >/dev/null 2>&1; then
+      echo "⚠  docker login $host failed — credentials may be wrong or expired" >&2
+      continue
+    fi
+
+    # Persist encrypted in pmcluster so daemon replays on restart.
+    if "$PREFIX/pmcluster" registry add "$host" --username "$user" --password-stdin <<<"$token" >/dev/null 2>&1; then
+      echo "✅ Registry $host added (user: $user)"
+    else
+      echo "⚠  pmcluster registry add $host failed (docker login succeeded but encryption/persist failed)" >&2
+    fi
+  done
+}
+
+if [ -n "${PMCLUSTER_REGISTRY:-}" ]; then
+  echo "→ Configuring registries from PMCLUSTER_REGISTRY"
+  configure_registries "$PMCLUSTER_REGISTRY"
+  echo
+fi
+
 # --- Install systemd service (Linux only) ---
 if [ "$OS" = "linux" ] && command -v systemctl >/dev/null 2>&1; then
   # Auto-detect the user running this script (or respect PMCLUSTER_USER).
@@ -141,10 +193,22 @@ echo
   echo "  systemctl status pmcluster    # check status"
   echo "  systemctl restart pmcluster   # restart after cluster changes"
   echo "  journalctl -u pmcluster -f    # follow logs"
+
+  if [ -n "${PMCLUSTER_REGISTRY:-}" ]; then
+    echo
+    echo "Registries were auto-configured. Verify:"
+    echo "  pmcluster registry list"
+  fi
 else
   echo
 echo "Next:"
 echo "  pmcluster init                # create ~/.pmcluster + bootstrap user"
 echo "  pmcluster cluster up --domain=<your-domain> --cert=<cert> --key=<key> --openobserve-email=<you@host>"
 echo "  pmcluster serve               # start the daemon (supervise via systemd; sample unit ships in repo)"
+
+  if [ -n "${PMCLUSTER_REGISTRY:-}" ]; then
+    echo
+    echo "Registries were auto-configured. Verify:"
+    echo "  pmcluster registry list"
+  fi
 fi

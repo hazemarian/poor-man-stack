@@ -121,6 +121,15 @@ curl -fsSL https://raw.githubusercontent.com/hazemarian/poor-man-stack/main/inst
 
 The script picks the right `darwin|linux` × `arm64|amd64` archive from the [GitHub releases](https://github.com/hazemarian/poor-man-stack/releases), verifies its SHA256, and drops the binary in `/usr/local/bin/pmcluster` (override with `PREFIX=…` or pin a version with `VERSION=v0.2.0`).
 
+**With private registry credentials (GHCR, Docker Hub, etc.):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hazemarian/poor-man-stack/main/install.sh | \
+  PMCLUSTER_REGISTRY="ghcr.io=my-username=ghp_abc123" bash
+```
+
+The `PMCLUSTER_REGISTRY` env var accepts comma-separated `host=user=token` entries. The script runs `docker login` and persists credentials encrypted via `pmcluster registry add` so workers can pull private images.
+
 Or build from source (requires Go 1.25+):
 
 ```bash
@@ -316,7 +325,15 @@ The webhook returns the same generic 401 for "wrong secret", "wrong source", and
 ### Private registries
 
 ```bash
-pmcluster registry add ghcr.io                # prompts for username + password
+# Interactive (prompts for password):
+pmcluster registry add ghcr.io
+
+# Scripted (no shell history leak):
+echo "$GITHUB_PAT" | pmcluster registry add ghcr.io --username myuser --password-stdin
+
+# At install time (one-shot):
+curl -fsSL .../install.sh | PMCLUSTER_REGISTRY="ghcr.io=myuser=$GITHUB_PAT" bash
+
 pmcluster registry list
 ```
 

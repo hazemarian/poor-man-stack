@@ -29,9 +29,17 @@ pmcluster cluster status
 If pmcluster is not installed:
 
 ```bash
+# Basic install:
 curl -fsSL https://raw.githubusercontent.com/hazemarian/poor-man-stack/main/install.sh | bash
 pmcluster init
+
+# With private registry credentials (e.g. GHCR):
+curl -fsSL https://raw.githubusercontent.com/hazemarian/poor-man-stack/main/install.sh | \
+  PMCLUSTER_REGISTRY="ghcr.io=my-username=ghp_abc123" bash
+pmcluster init
 ```
+
+Install env vars: `VERSION` (pin release), `PREFIX` (install path), `PMCLUSTER_USER` (systemd user), `PMCLUSTER_REGISTRY` (comma-separated `host=user=token` entries).
 
 If the cluster is not up:
 
@@ -223,7 +231,15 @@ Remove: `pmcluster webhook remove github-prod`
 If your images are in a private registry (e.g. `ghcr.io`):
 
 ```bash
-pmcluster registry add ghcr.io            # prompts for username + password
+# Interactive (prompts for password):
+pmcluster registry add ghcr.io
+
+# Scripted (no shell history leak):
+echo "$GITHUB_PAT" | pmcluster registry add ghcr.io --username myuser --password-stdin
+
+# At install time (one-shot):
+curl -fsSL .../install.sh | PMCLUSTER_REGISTRY="ghcr.io=myuser=$GITHUB_PAT" bash
+
 pmcluster registry list                   # verify
 ```
 
