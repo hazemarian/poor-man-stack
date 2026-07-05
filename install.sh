@@ -79,7 +79,72 @@ fi
 echo
 "$PREFIX/pmcluster" version || true
 echo
+
+# --- Install systemd service (Linux only) ---
+if [ "$OS" = "linux" ] && command -v systemctl >/dev/null 2>&1; then
+  # Auto-detect the user running this script (or respect PMCLUSTER_USER).
+  PMCLUSTER_USER="${PMCLUSTER_USER:-${SUDO_USER:-$(id -un)}}"
+  PMCLUSTER_HOME="$(eval echo ~${PMCLUSTER_USER})"
+
+  # Determine the docker group (usually "docker", but some distros use "docker-root").
+  DOCKER_GROUP="docker"
+  if getent group docker-root >/dev/null 2>&1; then
+    DOCKER_GROUP="docker-root"
+  fi
+
+  # If we are root (sudo) and the user isn't root, add them to the docker group.
+  if [ "$(id -u)" = 0 ] && [ "$PMCLUSTER_USER" != "root" ]; then
+    usermod -aG "$DOCKER_GROUP" "$PMCLUSTER_USER" 2>/dev/null || true
+  fi
+
+  echo "→ Installing systemd service for user ${PMCLUSTER_USER}"
+
+  # Write the unit file.  Templated at install time so HOME and User are correct.
+  sudo tee /etc/systemd/system/pmcluster.service >/dev/null <<UNIT
+[Unit]
+Description=pmcluster API Server
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=${PMCLUSTER_USER}
+Group=${DOCKER_GROUP}
+Environment=HOME=${PMCLUSTER_HOME}
+ExecStart=${PREFIX}/pmcluster serve
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+  systemctl daemon-reload
+  systemctl enable pmcluster
+
+  # If pmcluster was already initialized and the cluster is up, start now.
+  # Otherwise the operator needs to run 'pmcluster init' + 'pmcluster cluster up'
+  # first — we print the commands and let them decide.
+  if [ -f "${PMCLUSTER_HOME}/.pmcluster/config.yaml" ]; then
+    systemctl start pmcluster
+    echo "→ pmcluster started (found existing config at ${PMCLUSTER_HOME}/.pmcluster)"
+  else
+    echo "→ systemd unit installed but NOT started — run pmcluster init + cluster up first"
+  fi
+
+  echo
+echo "Next (if not already done):"
+echo "  pmcluster init                # create ~/.pmcluster + bootstrap user"
+echo "  pmcluster cluster up --domain=<your-domain> --cert=<cert> --key=<key> --openobserve-email=<you@host>"
+echo
+  echo "Manage the service:"
+  echo "  systemctl status pmcluster    # check status"
+  echo "  systemctl restart pmcluster   # restart after cluster changes"
+  echo "  journalctl -u pmcluster -f    # follow logs"
+else
+  echo
 echo "Next:"
 echo "  pmcluster init                # create ~/.pmcluster + bootstrap user"
 echo "  pmcluster cluster up --domain=<your-domain> --cert=<cert> --key=<key> --openobserve-email=<you@host>"
 echo "  pmcluster serve               # start the daemon (supervise via systemd; sample unit ships in repo)"
+fi

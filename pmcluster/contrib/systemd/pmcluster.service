@@ -1,28 +1,32 @@
+# systemd unit for pmcluster.
+#
+# This file is the reference template.  The one-liner install script
+# (install.sh) auto-generates a unit with the correct User/Group/HOME for
+# the operator running the install at the time they run it.
+#
+# If you prefer to write the unit by hand, copy this file to
+# /etc/systemd/system/pmcluster.service and replace the placeholders:
+#   ${USER}  — the unix user that owns ~/.pmcluster
+#   ${GROUP} — docker group on your distro (usually "docker")
+#   ${HOME}  — home directory of ${USER}
+#
+# After placing the file:
+#   systemctl daemon-reload
+#   systemctl enable --now pmcluster
+
 [Unit]
-Description=pmcluster control plane (REST API + webhook receiver)
-After=docker.service network-online.target
+Description=pmcluster API Server
+After=docker.service
 Requires=docker.service
-Wants=network-online.target
 
 [Service]
 Type=simple
-# Run as the user that owns ~/.pmcluster and is in the `docker` group.
-# Replace `pmcluster` with your install user (e.g. `ubuntu` on a fresh VPS).
-User=pmcluster
-Group=docker
-Environment=HOME=/home/pmcluster
+User=${USER}
+Group=${GROUP}
+Environment=HOME=${HOME}
 ExecStart=/usr/local/bin/pmcluster serve
-Restart=on-failure
-RestartSec=5s
-# StandardOutput/Error left at default (journal) — pmcluster also writes
-# its own JSON logs to ~/.pmcluster/logs/. Use `journalctl -u pmcluster`
-# for the latest console-formatted output, `pmcluster logs` for JSON.
-NoNewPrivileges=true
-# Tight FS hardening — pmcluster only ever writes to its data dir and the
-# docker socket. Readonly the rest.
-ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/home/pmcluster/.pmcluster
+Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
