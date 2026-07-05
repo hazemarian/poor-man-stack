@@ -1,0 +1,25 @@
+app: abbas
+env: production
+domain: nextrum-sy.com
+registry: ghcr.io/nextrum-sy
+version: v20260705-test
+volumes:
+  - abbas_data
+services:
+  abbas:
+    image: ghcr.io/nextrum-sy/abbas:v20260705-test
+    placement: manager
+    replicas: 1
+    expose:
+      port: 8080
+      host: abbas.nextrum-sy.com
+    volumes:
+      - abbas_data:/app/data
+    env:
+      PORT: "8080"
+      DB_PATH: /app/data/abbas.db
+    secrets:
+      - abbas_session_secret
+    healthcheck:
+      type: http
+      path: /health

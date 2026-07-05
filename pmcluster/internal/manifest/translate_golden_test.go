@@ -77,6 +77,19 @@ func TestTranslate_Golden(t *testing.T) {
 			},
 		},
 		{
+			name: "service-only-secrets",
+			expectedContains: []string{
+				"abbas-net",
+				"traefik-net",
+				"monitoring-net",
+				"abbas_session_secret",
+				"abbas.nextrum-sy.com",
+				"wget -q --spider",
+				"external: true",
+				"node.role == manager",
+			},
+		},
+		{
 			name: "runonce-job",
 			expectedContains: []string{
 				"batch-job-net",

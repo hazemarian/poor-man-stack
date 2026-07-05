@@ -64,9 +64,21 @@ func Translate(app *dsl.App) ([]byte, error) {
 		cf.Networks[monitoringNet] = &composeNetwork{External: true}
 	}
 
-	if len(app.Secrets) > 0 {
+	// Collect every secret referenced by any service AND by the top-level
+	// secrets: key.  This way secrets behave like volumes — referenced in a
+	// service → auto-declared at the top compose level with external: true.
+	secretSet := map[string]struct{}{}
+	for _, svc := range app.Services {
+		for _, s := range svc.Secrets {
+			secretSet[s] = struct{}{}
+		}
+	}
+	for _, s := range app.Secrets {
+		secretSet[s] = struct{}{}
+	}
+	if len(secretSet) > 0 {
 		cf.Secrets = map[string]*composeSecret{}
-		for _, s := range app.Secrets {
+		for s := range secretSet {
 			cf.Secrets[s] = &composeSecret{External: true}
 		}
 	}

@@ -1,0 +1,58 @@
+networks:
+  abbas-net:
+    driver: overlay
+  monitoring-net:
+    external: true
+  traefik-net:
+    external: true
+secrets:
+  abbas_session_secret:
+    external: true
+services:
+  abbas:
+    deploy:
+      labels:
+        application: abbas
+        environment: production
+        service: abbas
+        traefik.docker.network: traefik-net
+        traefik.enable: "true"
+        traefik.http.routers.abbas-abbas.entrypoints: websecure
+        traefik.http.routers.abbas-abbas.middlewares: cors-default@file
+        traefik.http.routers.abbas-abbas.rule: Host(`abbas.nextrum-sy.com`)
+        traefik.http.routers.abbas-abbas.tls: "true"
+        traefik.http.services.abbas-abbas.loadbalancer.server.port: "8080"
+        version: v20260705-test
+      placement:
+        constraints:
+        - node.role == manager
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      update_config:
+        delay: 10s
+        order: start-first
+        parallelism: 1
+    environment:
+      DB_PATH: /app/data/abbas.db
+      PORT: "8080"
+    healthcheck:
+      interval: 10s
+      retries: 5
+      test:
+      - CMD-SHELL
+      - wget -q --spider http://localhost:8080/health
+      timeout: 5s
+    image: ghcr.io/nextrum-sy/abbas:v20260705-test
+    networks:
+    - abbas-net
+    - traefik-net
+    - monitoring-net
+    secrets:
+    - abbas_session_secret
+    volumes:
+    - abbas_data:/app/data
+version: "3.9"
+volumes:
+  abbas_data:
+    driver: local
