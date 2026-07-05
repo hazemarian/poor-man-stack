@@ -27,9 +27,39 @@ type dockerCLIDeployer struct {
 }
 
 // NewDockerCLIDeployer streams the docker process's stdout/stderr to w
-// (os.Stdout for live progress; nil to discard).
+// (os.Stdout for live progress; nil to discard).  On failure the full
+// captured output is attached to the error so callers (REST/webhook/CLI)
+// can diagnose without SSH-ing into the host.
 func NewDockerCLIDeployer(w io.Writer) StackDeployer {
 	return &dockerCLIDeployer{stdout: w, stderr: w}
+}
+
+// runWithOutput captures combined stdout+stderr; on success it returns "".
+// On failure the output is returned so the caller can attach it to the error.
+func (d *dockerCLIDeployer) runWithOutput(cmd *exec.Cmd) (string, error) {
+	var buf bytes.Buffer
+	// Tee: live progress to the caller's writer AND capture for errors.
+	if d.stdout != nil {
+		cmd.Stdout = io.MultiWriter(&buf, d.stdout)
+		cmd.Stderr = io.MultiWriter(&buf, d.stderr)
+	} else {
+		cmd.Stdout = &buf
+		cmd.Stderr = &buf
+	}
+	if len(d.envExtras) > 0 {
+		cmd.Env = append([]string{}, d.envExtras...)
+	}
+	err := cmd.Run()
+	return trimOutput(buf.String()), err
+}
+
+// trimOutput strips trailing whitespace so error messages aren't padded
+// with blank lines.
+func trimOutput(s string) string {
+	for len(s) > 0 && (s[len(s)-1] == '\n' || s[len(s)-1] == ' ' || s[len(s)-1] == '\t') {
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 func (d *dockerCLIDeployer) DeployStack(ctx context.Context, name string, composeYAML []byte) error {
@@ -43,12 +73,11 @@ func (d *dockerCLIDeployer) DeployStack(ctx context.Context, name string, compos
 		name,
 	)
 	cmd.Stdin = bytes.NewReader(composeYAML)
-	cmd.Stdout = d.stdout
-	cmd.Stderr = d.stderr
-	if len(d.envExtras) > 0 {
-		cmd.Env = append([]string{}, d.envExtras...)
-	}
-	if err := cmd.Run(); err != nil {
+	out, err := d.runWithOutput(cmd)
+	if err != nil {
+		if out != "" {
+			return fmt.Errorf("docker stack deploy %s: %s", name, out)
+		}
 		return fmt.Errorf("docker stack deploy %s: %w", name, err)
 	}
 	return nil
@@ -56,9 +85,11 @@ func (d *dockerCLIDeployer) DeployStack(ctx context.Context, name string, compos
 
 func (d *dockerCLIDeployer) RemoveStack(ctx context.Context, name string) error {
 	cmd := exec.CommandContext(ctx, "docker", "stack", "rm", name)
-	cmd.Stdout = d.stdout
-	cmd.Stderr = d.stderr
-	if err := cmd.Run(); err != nil {
+	out, err := d.runWithOutput(cmd)
+	if err != nil {
+		if out != "" {
+			return fmt.Errorf("docker stack rm %s: %s", name, out)
+		}
 		return fmt.Errorf("docker stack rm %s: %w", name, err)
 	}
 	return nil
@@ -70,9 +101,11 @@ func (d *dockerCLIDeployer) ForceUpdateService(ctx context.Context, fullName str
 		"--detach=true",
 		fullName,
 	)
-	cmd.Stdout = d.stdout
-	cmd.Stderr = d.stderr
-	if err := cmd.Run(); err != nil {
+	out, err := d.runWithOutput(cmd)
+	if err != nil {
+		if out != "" {
+			return fmt.Errorf("docker service update --force %s: %s", fullName, out)
+		}
 		return fmt.Errorf("docker service update --force %s: %w", fullName, err)
 	}
 	return nil
