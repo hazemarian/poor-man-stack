@@ -49,13 +49,13 @@ func (f *inMemoryDockerClient) ConfigExists(_ context.Context, _ string) (bool, 
 func (f *inMemoryDockerClient) ConfigCreate(_ context.Context, _ docker.ConfigSpec) error {
 	return nil
 }
-func (f *inMemoryDockerClient) SecretRemove(_ context.Context, _ string) error  { return nil }
+func (f *inMemoryDockerClient) SecretRemove(_ context.Context, _ string) error { return nil }
 func (f *inMemoryDockerClient) SecretList(_ context.Context, _, _ string) ([]string, error) {
 	return nil, nil
 }
 func (f *inMemoryDockerClient) ConfigRemove(_ context.Context, _ string) error  { return nil }
 func (f *inMemoryDockerClient) NetworkRemove(_ context.Context, _ string) error { return nil }
-func (f *inMemoryDockerClient) VolumeRemove(_ context.Context, _ string) error { return nil }
+func (f *inMemoryDockerClient) VolumeRemove(_ context.Context, _ string) error  { return nil }
 func (f *inMemoryDockerClient) ServiceList(_ context.Context) ([]docker.Service, error) {
 	return nil, nil
 }

@@ -466,9 +466,9 @@ func TestCompare_Versions(t *testing.T) {
 		{"v0.2.0", "v0.1.99", 1},
 		{"v1.0.0", "v0.99.99", 1},
 		{"v0.1.11", "0.1.12", -1},       // leading v optional
-		{"dev", "v0.1.0", -1},            // "dev" → [0], "v0.1.0" → [0,1,0], so dev < 0.1.0
-		{"v0.10.0", "v0.2.0", 1},         // 10 > 2 numerically
-		{"v0.1.12-alpha", "v0.1.11", 1},   // pre-release ignored, 12 > 11
+		{"dev", "v0.1.0", -1},           // "dev" → [0], "v0.1.0" → [0,1,0], so dev < 0.1.0
+		{"v0.10.0", "v0.2.0", 1},        // 10 > 2 numerically
+		{"v0.1.12-alpha", "v0.1.11", 1}, // pre-release ignored, 12 > 11
 	}
 	for _, tt := range tests {
 		got := Compare(tt.a, tt.b)

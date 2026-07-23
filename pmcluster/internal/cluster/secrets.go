@@ -85,7 +85,7 @@ func EnsureVersionedSecret(ctx context.Context, d docker.Client, baseName string
 		Name: versionedName,
 		Data: data,
 		Labels: map[string]string{
-			pmclusterLabel:  "true",
+			pmclusterLabel:   "true",
 			"pmcluster.base": baseName,
 		},
 	})
@@ -191,4 +191,3 @@ func HtpasswdLine(user, password string) (string, error) {
 	}
 	return fmt.Sprintf("%s:%s\n", user, hash), nil
 }
-
