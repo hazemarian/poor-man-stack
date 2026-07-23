@@ -97,7 +97,7 @@ services:
 
   # Portainer Management
   portainer:
-    image: portainer/portainer-ce:2.33.6
+    image: portainer/portainer-ce:2.39.5
     command:
       - "--admin-password-file=/run/secrets/portainer_admin_password"
     volumes:
