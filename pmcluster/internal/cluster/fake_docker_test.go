@@ -29,6 +29,7 @@ type fakeDocker struct {
 	removedSecrets  []string
 	removedConfigs  []string
 	removedNetworks []string
+	removedVolumes  []string
 
 	// Injected error overrides for specific operations.
 	networkExistsErr error
@@ -148,6 +149,11 @@ func (f *fakeDocker) ConfigRemove(_ context.Context, name string) error {
 func (f *fakeDocker) NetworkRemove(_ context.Context, name string) error {
 	f.removedNetworks = append(f.removedNetworks, name)
 	delete(f.networks, name)
+	return nil
+}
+
+func (f *fakeDocker) VolumeRemove(_ context.Context, name string) error {
+	f.removedVolumes = append(f.removedVolumes, name)
 	return nil
 }
 

@@ -104,6 +104,13 @@ type bootstrapSpec struct {
 
 // ensure is the get-or-create primitive: load from store and reconcile
 // the matching Swarm secret, or mint a fresh password when missing.
+//
+// When the username changes for an OpenObserve credential, the password
+// is also rotated.  OpenObserve only reads ZO_ROOT_USER_* on first boot;
+// changing just the email would leave the container with a stale root
+// user.  A fresh password + email pair ensures the compose template
+// changes, triggering a service update, and the new env vars take effect
+// once the data volume is reset (handled by the caller in up.go).
 func (m *CredentialsManager) ensure(ctx context.Context, spec bootstrapSpec) (*ManagedCredential, error) {
 	existing, err := m.Store.GetCredential(ctx, spec.name)
 	if err == nil {
@@ -118,6 +125,27 @@ func (m *CredentialsManager) ensure(ctx context.Context, spec bootstrapSpec) (*M
 			return nil, fmt.Errorf("decrypt %s: %w", spec.name, err)
 		}
 
+		// OpenObserve ignores env-vars after first boot, so when the
+		// email changes we must also rotate the password.  The caller
+		// (up.go) resets the data volume so the new pair takes effect.
+		if usernameChanged && spec.kind == KindOpenObserve {
+			newPass, err := RandomPassword()
+			if err != nil {
+				return nil, fmt.Errorf("rotate password for %s: %w", spec.name, err)
+			}
+			ciphertext, err := m.Cipher.Encrypt([]byte(newPass))
+			if err != nil {
+				return nil, fmt.Errorf("encrypt new password: %w", err)
+			}
+			if err := m.Store.RotateCredential(ctx, spec.name, ciphertext); err != nil {
+				return nil, fmt.Errorf("rotate credential %s: %w", spec.name, err)
+			}
+			if err := m.Store.UpdateCredentialUsername(ctx, spec.name, username); err != nil {
+				return nil, fmt.Errorf("update username for %s: %w", spec.name, err)
+			}
+			plaintext = []byte(newPass)
+		}
+
 		secretPayload, err := serialisePassword(spec, username, string(plaintext))
 		if err != nil {
 			return nil, err
@@ -127,8 +155,9 @@ func (m *CredentialsManager) ensure(ctx context.Context, spec bootstrapSpec) (*M
 			return nil, fmt.Errorf("ensure swarm secret %s: %w", existing.SwarmSecretName, err)
 		}
 
-		// Persist the updated username to the store if it changed.
-		if usernameChanged {
+		// Persist the updated username to the store if it changed (and
+		// we haven't already via the rotate path above).
+		if usernameChanged && spec.kind != KindOpenObserve {
 			if updateErr := m.Store.UpdateCredentialUsername(ctx, spec.name, username); updateErr != nil {
 				return nil, fmt.Errorf("update username for %s: %w", spec.name, updateErr)
 			}

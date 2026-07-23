@@ -120,6 +120,17 @@ func Up(ctx context.Context, deps UpDeps, in UpInput) (*UpResult, error) {
 		}
 	}
 
+	// When the OpenObserve admin email changes, the data volume must be
+	// reset so ZO_ROOT_USER_* env vars take effect on the next boot.
+	// OpenObserve only reads those env vars on first run; after that the
+	// hashed password lives in the volume and ignores env updates.
+	if obsCred := creds["openobserve_admin"]; obsCred != nil && obsCred.UsernameChanged {
+		fmt.Fprintf(out, "  ⚠ OpenObserve email changed → resetting data volume so new credentials take effect\n")
+		if err := deps.Docker.VolumeRemove(ctx, "observability_openobserve_data"); err != nil {
+			return res, fmt.Errorf("reset openobserve data volume: %w (manual: docker volume rm observability_openobserve_data)", err)
+		}
+	}
+
 	step("Rendering and creating Docker configs (OTel pipeline, Traefik dynamic)")
 	openobsCred := creds["openobserve_admin"]
 	if openobsCred == nil {

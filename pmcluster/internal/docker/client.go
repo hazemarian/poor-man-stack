@@ -36,6 +36,7 @@ type Client interface {
 	SecretRemove(ctx context.Context, name string) error
 	ConfigRemove(ctx context.Context, name string) error
 	NetworkRemove(ctx context.Context, name string) error
+	VolumeRemove(ctx context.Context, name string) error
 
 	ServiceList(ctx context.Context) ([]Service, error)
 	NodeList(ctx context.Context) ([]Node, error)
@@ -269,6 +270,10 @@ func (r *realClient) ConfigRemove(ctx context.Context, name string) error {
 
 func (r *realClient) NetworkRemove(ctx context.Context, name string) error {
 	return idempotentRemove(r.c.NetworkRemove(ctx, name), "network", name)
+}
+
+func (r *realClient) VolumeRemove(ctx context.Context, name string) error {
+	return idempotentRemove(r.c.VolumeRemove(ctx, name, true), "volume", name)
 }
 
 func (r *realClient) ServiceList(ctx context.Context) ([]Service, error) {
