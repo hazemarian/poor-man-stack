@@ -4,11 +4,14 @@ package server
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"golang.org/x/time/rate"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/api"
@@ -19,6 +22,18 @@ import (
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/store"
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/webhook"
 )
+
+// trustedProxyCIDRs are the networks pmcluster trusts to set
+// X-Forwarded-For / X-Real-IP headers.  By default this is localhost
+// and standard Docker bridge/overlay gateways.  Traefik runs on the
+// same Swarm node, so its IP is typically within the Docker networks.
+var trustedProxyCIDRs = []string{
+	"127.0.0.1/8",    // localhost
+	"::1/128",        // localhost IPv6
+	"10.0.0.0/8",     // Docker default bridge + Swarm overlay default
+	"172.16.0.0/12",  // Docker bridge (older default)
+	"192.168.0.0/16", // Docker bridge (legacy)
+}
 
 // Deps bundles the collaborators a fully-wired server needs. Optional
 // fields cause their associated routes to be omitted when nil, so tests
@@ -35,10 +50,19 @@ type Deps struct {
 func New(d Deps) http.Handler {
 	r := chi.NewRouter()
 
-	// RealIP first so later middleware sees the right address; Recoverer
-	// last so panics become 500s instead of crashing the daemon.
-	r.Use(middleware.RealIP)
+	// RealIP first so later middleware (including rate limiter) sees
+	// the true client address.  Only trust known proxy CIDRs (Docker
+	// networks, localhost) — prevents IP spoofing from untrusted callers.
+	r.Use(trustedRealIP)
 	r.Use(middleware.RequestID)
+
+	// Per-IP rate limiting: separate buckets for API and webhook paths.
+	cfg := defaultRateConfig()
+	r.Use(rateLimiter(
+		newPerIPRateLimiter(rate.Limit(cfg.generalRate), cfg.generalBurst),
+		newPerIPRateLimiter(rate.Limit(cfg.webhookRate), cfg.webhookBurst),
+	))
+
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(30 * time.Second))
 
@@ -78,6 +102,76 @@ func New(d Deps) http.Handler {
 	// the route on the context, otelhttp picks it up via the
 	// http.route attribute it sets after the chi pattern matches).
 	return otelhttp.NewHandler(r, "pmcluster.http")
+}
+
+// trustedRealIP is like chi's RealIP but only trusts X-Forwarded-For /
+// X-Real-IP from known proxy CIDRs (Docker networks, localhost).
+// Requests from untrusted sources ignore the proxy headers.
+func trustedRealIP(next http.Handler) http.Handler {
+	trustedNets := parseTrustedCIDRs()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rip := realIPFromTrusted(r, trustedNets); rip != "" {
+			r.RemoteAddr = rip
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func parseTrustedCIDRs() []*net.IPNet {
+	var out []*net.IPNet
+	for _, cidr := range trustedProxyCIDRs {
+		_, n, err := net.ParseCIDR(cidr)
+		if err != nil {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// realIPFromTrusted extracts the real client IP from proxy headers only
+// when the remote peer is a trusted proxy.
+func realIPFromTrusted(r *http.Request, trustedNets []*net.IPNet) string {
+	// Parse the remote address (strip port).
+	remoteIP, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		remoteIP = r.RemoteAddr
+	}
+	rIP := net.ParseIP(remoteIP)
+	if rIP == nil {
+		return ""
+	}
+
+	// Only trust proxy headers from known proxy networks.
+	trusted := false
+	for _, n := range trustedNets {
+		if n.Contains(rIP) {
+			trusted = true
+			break
+		}
+	}
+	if !trusted {
+		return ""
+	}
+
+	// Same precedence order as chi's RealIP.
+	for _, hdr := range []string{"True-Client-IP", "X-Real-IP", "X-Forwarded-For"} {
+		v := r.Header.Get(hdr)
+		if v == "" {
+			continue
+		}
+		// X-Forwarded-For: take the first (leftmost) IP.
+		if hdr == "X-Forwarded-For" {
+			if idx := strings.IndexByte(v, ','); idx >= 0 {
+				v = v[:idx]
+			}
+		}
+		v = strings.TrimSpace(v)
+		if ip := net.ParseIP(v); ip != nil {
+			return v
+		}
+	}
+	return ""
 }
 
 // Run starts the HTTP server on addr and blocks until ctx is cancelled,

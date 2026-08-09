@@ -13,8 +13,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -110,11 +112,18 @@ func buildHandler(t *testing.T, st *store.Store, c *credentials.Cipher, dep *rec
 	return srv, h
 }
 
-// computeHMAC returns "sha256=<hex>" for the given body and secret.
-func computeHMAC(secret, body []byte) string {
+// computeHMAC returns "sha256=<hex>" for the given timestamp, body, and secret.
+// HMAC is over timestamp_decimal + body (exactly as verifyHMAC does).
+func computeHMAC(secret, body []byte, timestamp int64) string {
 	mac := hmac.New(sha256.New, secret)
+	fmt.Fprint(mac, timestamp)
 	mac.Write(body)
 	return "sha256=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+// nowTimestamp returns the current unix time as a string for the timestamp header.
+func nowTimestamp() string {
+	return strconv.FormatInt(time.Now().Unix(), 10)
 }
 
 // A minimal valid DSL manifest that the deploy pipeline accepts.
@@ -168,6 +177,7 @@ func TestHandlerReceive(t *testing.T) {
 
 		body := validPayload(t)
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhook/"+sourceName, bytes.NewReader(body))
+		req.Header.Set(TimestampHeader, nowTimestamp())
 		resp, err := srv.Client().Do(req)
 		if err != nil {
 			t.Fatalf("POST: %v", err)
@@ -175,16 +185,74 @@ func TestHandlerReceive(t *testing.T) {
 		checkUnauthorized(t, resp, "missing signature header")
 	})
 
+	t.Run("missing timestamp header", func(t *testing.T) {
+		st, c, dep, secret := testDeps(t, sourceName)
+		srv, _ := buildHandler(t, st, c, dep)
+
+		body := validPayload(t)
+		// Old-style sig over just the body (no timestamp) — still returns 401
+		// because the timestamp header is now required.
+		mac := hmac.New(sha256.New, secret)
+		mac.Write(body)
+		sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhook/"+sourceName, bytes.NewReader(body))
+		req.Header.Set(SignatureHeader, sig)
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatalf("POST: %v", err)
+		}
+		checkUnauthorized(t, resp, "missing timestamp header")
+	})
+
+	t.Run("stale timestamp", func(t *testing.T) {
+		st, c, dep, secret := testDeps(t, sourceName)
+		srv, _ := buildHandler(t, st, c, dep)
+
+		stale := time.Now().Add(-10 * time.Minute).Unix()
+		body := validPayload(t)
+		sig := computeHMAC(secret, body, stale)
+
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhook/"+sourceName, bytes.NewReader(body))
+		req.Header.Set(SignatureHeader, sig)
+		req.Header.Set(TimestampHeader, strconv.FormatInt(stale, 10))
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatalf("POST: %v", err)
+		}
+		checkUnauthorized(t, resp, "stale timestamp")
+	})
+
+	t.Run("future timestamp", func(t *testing.T) {
+		st, c, dep, secret := testDeps(t, sourceName)
+		srv, _ := buildHandler(t, st, c, dep)
+
+		future := time.Now().Add(10 * time.Minute).Unix()
+		body := validPayload(t)
+		sig := computeHMAC(secret, body, future)
+
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhook/"+sourceName, bytes.NewReader(body))
+		req.Header.Set(SignatureHeader, sig)
+		req.Header.Set(TimestampHeader, strconv.FormatInt(future, 10))
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatalf("POST: %v", err)
+		}
+		checkUnauthorized(t, resp, "future timestamp")
+	})
+
 	t.Run("malformed signature — no sha256 prefix", func(t *testing.T) {
 		st, c, dep, secret := testDeps(t, sourceName)
 		srv, _ := buildHandler(t, st, c, dep)
 
 		body := validPayload(t)
-		sig := computeHMAC(secret, body)
+		ts := time.Now().Unix()
+		sig := computeHMAC(secret, body, ts)
 		// Strip the "sha256=" prefix to make it malformed.
 		malformed := strings.TrimPrefix(sig, "sha256=")
 
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhook/"+sourceName, bytes.NewReader(body))
+		req.Header.Set(TimestampHeader, strconv.FormatInt(ts, 10))
 		req.Header.Set(SignatureHeader, malformed)
 		resp, err := srv.Client().Do(req)
 		if err != nil {
@@ -199,6 +267,7 @@ func TestHandlerReceive(t *testing.T) {
 
 		body := validPayload(t)
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhook/"+sourceName, bytes.NewReader(body))
+		req.Header.Set(TimestampHeader, nowTimestamp())
 		req.Header.Set(SignatureHeader, "sha256=not-valid-hex-!!!!")
 		resp, err := srv.Client().Do(req)
 		if err != nil {
@@ -214,6 +283,7 @@ func TestHandlerReceive(t *testing.T) {
 		body := validPayload(t)
 		// "sha256=abc" is valid hex but only 3 bytes — sha256 requires 32.
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhook/"+sourceName, bytes.NewReader(body))
+		req.Header.Set(TimestampHeader, nowTimestamp())
 		req.Header.Set(SignatureHeader, "sha256=abc")
 		resp, err := srv.Client().Do(req)
 		if err != nil {
@@ -230,6 +300,7 @@ func TestHandlerReceive(t *testing.T) {
 		// 64 valid hex chars but wrong HMAC.
 		wrongSig := "sha256=" + strings.Repeat("ab", 32)
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhook/"+sourceName, bytes.NewReader(body))
+		req.Header.Set(TimestampHeader, nowTimestamp())
 		req.Header.Set(SignatureHeader, wrongSig)
 		resp, err := srv.Client().Do(req)
 		if err != nil {
@@ -242,9 +313,11 @@ func TestHandlerReceive(t *testing.T) {
 		st, c, dep, secret := testDeps(t, sourceName)
 		srv, _ := buildHandler(t, st, c, dep)
 
+		ts := time.Now().Unix()
 		body := validPayload(t)
-		sig := computeHMAC(secret, body)
+		sig := computeHMAC(secret, body, ts)
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhook/never-existed", bytes.NewReader(body))
+		req.Header.Set(TimestampHeader, strconv.FormatInt(ts, 10))
 		req.Header.Set(SignatureHeader, sig)
 		resp, err := srv.Client().Do(req)
 		if err != nil {
@@ -257,9 +330,11 @@ func TestHandlerReceive(t *testing.T) {
 		st, c, dep, secret := testDeps(t, sourceName)
 		srv, _ := buildHandler(t, st, c, dep)
 
+		ts := time.Now().Unix()
 		body := validPayload(t)
-		sig := computeHMAC(secret, body)
+		sig := computeHMAC(secret, body, ts)
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhook/"+sourceName, bytes.NewReader(body))
+		req.Header.Set(TimestampHeader, strconv.FormatInt(ts, 10))
 		req.Header.Set(SignatureHeader, sig)
 		resp, err := srv.Client().Do(req)
 		if err != nil {
@@ -316,9 +391,11 @@ func TestHandlerReceive(t *testing.T) {
 		st, c, dep, secret := testDeps(t, sourceName)
 		srv, _ := buildHandler(t, st, c, dep)
 
+		ts := time.Now().Unix()
 		body := []byte("not-valid-json{{{{")
-		sig := computeHMAC(secret, body)
+		sig := computeHMAC(secret, body, ts)
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhook/"+sourceName, bytes.NewReader(body))
+		req.Header.Set(TimestampHeader, strconv.FormatInt(ts, 10))
 		req.Header.Set(SignatureHeader, sig)
 		resp, err := srv.Client().Do(req)
 		if err != nil {
@@ -336,9 +413,11 @@ func TestHandlerReceive(t *testing.T) {
 		dep.deployErr = errors.New("docker stack deploy failed")
 		srv, _ := buildHandler(t, st, c, dep)
 
+		ts := time.Now().Unix()
 		body := validPayload(t)
-		sig := computeHMAC(secret, body)
+		sig := computeHMAC(secret, body, ts)
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhook/"+sourceName, bytes.NewReader(body))
+		req.Header.Set(TimestampHeader, strconv.FormatInt(ts, 10))
 		req.Header.Set(SignatureHeader, sig)
 		resp, err := srv.Client().Do(req)
 		if err != nil {
@@ -374,8 +453,10 @@ func TestHandlerReceive(t *testing.T) {
 			}
 		}
 
-		sig := computeHMAC(secret, body)
+		ts := time.Now().Unix()
+		sig := computeHMAC(secret, body, ts)
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhook/"+sourceName, bytes.NewReader(body))
+		req.Header.Set(TimestampHeader, strconv.FormatInt(ts, 10))
 		req.Header.Set(SignatureHeader, sig)
 		resp, err := srv.Client().Do(req)
 		if err != nil {
@@ -402,9 +483,11 @@ func TestHandlerReceive(t *testing.T) {
 			t.Fatal("last_used_at should be NULL before first successful POST")
 		}
 
+		ts := time.Now().Unix()
 		body := validPayload(t)
-		sig := computeHMAC(secret, body)
+		sig := computeHMAC(secret, body, ts)
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhook/"+sourceName, bytes.NewReader(body))
+		req.Header.Set(TimestampHeader, strconv.FormatInt(ts, 10))
 		req.Header.Set(SignatureHeader, sig)
 		resp, err := srv.Client().Do(req)
 		if err != nil {
@@ -434,6 +517,7 @@ func TestHandlerReceive(t *testing.T) {
 		// Send with a wrong signature so we get a 401.
 		wrongSig := "sha256=" + strings.Repeat("00", 32)
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhook/"+sourceName, bytes.NewReader(body))
+		req.Header.Set(TimestampHeader, nowTimestamp())
 		req.Header.Set(SignatureHeader, wrongSig)
 		resp, err := srv.Client().Do(req)
 		if err != nil {
@@ -472,22 +556,14 @@ func TestHandlerReceive_BodySizeExact(t *testing.T) {
 	srv, _ := buildHandler(t, st, c, dep)
 
 	// Build a body that is exactly MaxBodyBytes.
-	// We need valid JSON for the size check to not interfere with parsing.
-	// Use a payload with a manifest field large enough to hit exactly MaxBodyBytes.
-	// The body is signed with the correct key; only the size matters here.
-	//
-	// Note: since the body needs to be exactly MaxBodyBytes, we build it carefully.
-	// A simple approach: build a big JSON object whose marshalled form is <= MaxBodyBytes.
-	// Actually, testing "exactly at the limit is accepted" is complex because the manifest
-	// still needs to parse correctly. We relax this to: a body that is MaxBodyBytes-1
-	// bytes of zeroes inside a JSON string is accepted (but won't parse as a valid manifest).
-	// Instead, we just verify the status is not 413 for a body of MaxBodyBytes-1 bytes.
 	smallBody := validPayload(t)
 	if len(smallBody) >= MaxBodyBytes {
 		t.Skip("validPayload already exceeds MaxBodyBytes — test not applicable")
 	}
-	sig := computeHMAC(secret, smallBody)
+	ts := time.Now().Unix()
+	sig := computeHMAC(secret, smallBody, ts)
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/webhook/"+sourceName, bytes.NewReader(smallBody))
+	req.Header.Set(TimestampHeader, strconv.FormatInt(ts, 10))
 	req.Header.Set(SignatureHeader, sig)
 	resp, err := srv.Client().Do(req)
 	if err != nil {
@@ -503,9 +579,10 @@ func TestHandlerReceive_BodySizeExact(t *testing.T) {
 func TestComputeHMACMatchesProduction(t *testing.T) {
 	secret := []byte("test-secret")
 	body := []byte(`{"manifest":"app: test\n"}`)
+	ts := int64(1710000000)
 
 	// Use our test helper.
-	sig := computeHMAC(secret, body)
+	sig := computeHMAC(secret, body, ts)
 	if !strings.HasPrefix(sig, "sha256=") {
 		t.Fatalf("sig = %q, want 'sha256=' prefix", sig)
 	}
@@ -515,8 +592,9 @@ func TestComputeHMACMatchesProduction(t *testing.T) {
 		t.Fatalf("decode hex: %v", err)
 	}
 
-	// Compute independently.
+	// Compute independently — must match fmt.Fprint(timestamp) + body.
 	mac := hmac.New(sha256.New, secret)
+	fmt.Fprint(mac, ts)
 	mac.Write(body)
 	want := mac.Sum(nil)
 

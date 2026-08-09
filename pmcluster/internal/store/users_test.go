@@ -22,23 +22,44 @@ func openTestStore(t *testing.T) *Store {
 	return s
 }
 
-// hashFor is a test helper that produces a real argon2id hash for a token.
-func hashFor(t *testing.T, token string) string {
+// createV2User generates a v2 token and inserts the user, returning the
+// full token string, the tokenID, and the secret.
+func createV2User(t *testing.T, s *Store, name string) (token, tokenID, secret string) {
 	t.Helper()
-	h, err := auth.HashToken(token)
+	var err error
+	token, err = auth.GenerateToken()
 	if err != nil {
-		t.Fatalf("HashToken(%q): %v", token, err)
+		t.Fatalf("GenerateToken: %v", err)
 	}
-	return h
+	tokenID, secret = auth.SplitToken(token)
+	h, err := auth.HashToken(secret)
+	if err != nil {
+		t.Fatalf("HashToken: %v", err)
+	}
+	if _, err := s.CreateUser(context.Background(), name, tokenID, h); err != nil {
+		t.Fatalf("CreateUser(%q): %v", name, err)
+	}
+	return
 }
 
-// TestCreateUser_HappyPath verifies that a new user is inserted and returns a
-// valid (non-zero) row ID.
+// TestCreateUser_HappyPath verifies that a new v2 user is inserted and
+// returns a valid (non-zero) row ID.
 func TestCreateUser_HappyPath(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	id, err := s.CreateUser(ctx, "alice", hashFor(t, "token-alice"))
+	tok, tokenID, secret := "", "", ""
+	var err error
+	tok, err = auth.GenerateToken()
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	tokenID, secret = auth.SplitToken(tok)
+	h, err := auth.HashToken(secret)
+	if err != nil {
+		t.Fatalf("HashToken: %v", err)
+	}
+	id, err := s.CreateUser(ctx, "alice", tokenID, h)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -53,13 +74,41 @@ func TestCreateUser_UniqueCollision(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	_, err := s.CreateUser(ctx, "alice", hashFor(t, "token-a"))
+	createV2User(t, s, "alice")
+
+	tok, err := auth.GenerateToken()
 	if err != nil {
-		t.Fatalf("first CreateUser: %v", err)
+		t.Fatalf("GenerateToken: %v", err)
 	}
-	_, err = s.CreateUser(ctx, "alice", hashFor(t, "token-b"))
+	tid, secret := auth.SplitToken(tok)
+	h, _ := auth.HashToken(secret)
+	_, err = s.CreateUser(ctx, "alice", tid, h)
 	if !errors.Is(err, ErrUserExists) {
 		t.Errorf("second CreateUser err = %v, want ErrUserExists", err)
+	}
+}
+
+// TestCreateUser_UniqueTokenID verifies that two users can't share a token_id.
+func TestCreateUser_UniqueTokenID(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	tok, err := auth.GenerateToken()
+	if err != nil {
+		t.Fatalf("GenerateToken: %v", err)
+	}
+	tid, secret := auth.SplitToken(tok)
+	h, _ := auth.HashToken(secret)
+
+	if _, err := s.CreateUser(ctx, "alice", tid, h); err != nil {
+		t.Fatalf("first CreateUser: %v", err)
+	}
+
+	// Re-hash the same secret with a different user name and same token_id.
+	h2, _ := auth.HashToken(secret)
+	_, err = s.CreateUser(ctx, "bob", tid, h2)
+	if err == nil {
+		t.Error("expected UNIQUE violation on duplicate token_id, got nil")
 	}
 }
 
@@ -76,12 +125,8 @@ func TestCountUsers(t *testing.T) {
 		t.Errorf("CountUsers on empty DB = %d, want 0", n)
 	}
 
-	if _, err := s.CreateUser(ctx, "alice", hashFor(t, "tok-a")); err != nil {
-		t.Fatalf("CreateUser alice: %v", err)
-	}
-	if _, err := s.CreateUser(ctx, "bob", hashFor(t, "tok-b")); err != nil {
-		t.Fatalf("CreateUser bob: %v", err)
-	}
+	createV2User(t, s, "alice")
+	createV2User(t, s, "bob")
 
 	n, err = s.CountUsers(ctx)
 	if err != nil {
@@ -92,15 +137,13 @@ func TestCountUsers(t *testing.T) {
 	}
 }
 
-// TestUserByToken covers: unknown token returns nil, known token returns the
-// right user, and a multi-user scenario (N=3) where only the correct user is
-// returned.
+// TestUserByToken covers v2 token lookup.
 func TestUserByToken(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
 	t.Run("unknown token returns nil", func(t *testing.T) {
-		u, err := s.UserByToken(ctx, "does-not-exist")
+		u, err := s.UserByToken(ctx, "pmc_deadbeef_nonexistent")
 		if err != nil {
 			t.Fatalf("UserByToken: %v", err)
 		}
@@ -109,17 +152,13 @@ func TestUserByToken(t *testing.T) {
 		}
 	})
 
-	// Set up three users with real argon2id hashes.
-	tokens := []string{"tok-alice", "tok-bob", "tok-carol"}
-	names := []string{"alice", "bob", "carol"}
-	for i, name := range names {
-		if _, err := s.CreateUser(ctx, name, hashFor(t, tokens[i])); err != nil {
-			t.Fatalf("CreateUser %s: %v", name, err)
-		}
-	}
+	// Set up three v2 users.
+	tokAlice, _, _ := createV2User(t, s, "alice")
+	tokBob, _, _ := createV2User(t, s, "bob")
+	tokCarol, _, _ := createV2User(t, s, "carol")
 
 	t.Run("valid token returns the right user", func(t *testing.T) {
-		u, err := s.UserByToken(ctx, "tok-alice")
+		u, err := s.UserByToken(ctx, tokAlice)
 		if err != nil {
 			t.Fatalf("UserByToken: %v", err)
 		}
@@ -131,23 +170,20 @@ func TestUserByToken(t *testing.T) {
 		}
 	})
 
-	t.Run("multi-user: each token maps to its own user", func(t *testing.T) {
-		for i, tok := range tokens {
+	t.Run("multi-user: each v2 token maps to its own user", func(t *testing.T) {
+		for _, tok := range []string{tokAlice, tokBob, tokCarol} {
 			u, err := s.UserByToken(ctx, tok)
 			if err != nil {
 				t.Fatalf("UserByToken(%q): %v", tok, err)
 			}
 			if u == nil {
-				t.Fatalf("UserByToken(%q) = nil, want %q", tok, names[i])
-			}
-			if u.Name != names[i] {
-				t.Errorf("UserByToken(%q).Name = %q, want %q", tok, u.Name, names[i])
+				t.Fatalf("UserByToken(%q) = nil", tok)
 			}
 		}
 	})
 
 	t.Run("token for no user returns nil", func(t *testing.T) {
-		u, err := s.UserByToken(ctx, "token-for-nobody")
+		u, err := s.UserByToken(ctx, "pmc_abcdef01_fake-secret")
 		if err != nil {
 			t.Fatalf("UserByToken: %v", err)
 		}
@@ -155,6 +191,43 @@ func TestUserByToken(t *testing.T) {
 			t.Errorf("expected nil for non-matching token, got %+v", u)
 		}
 	})
+}
+
+// TestUserByTokenLegacy verifies the legacy O(N) fallback still works for
+// pre-v2 tokens.
+func TestUserByTokenLegacy(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	// Insert a legacy-style user: empty tokenID, hash of a plain token.
+	legacyToken := "old-plain-legacy-token"
+	h, err := auth.HashToken(legacyToken)
+	if err != nil {
+		t.Fatalf("HashToken: %v", err)
+	}
+	if _, err := s.CreateUser(ctx, "legacy-user", "", h); err != nil {
+		t.Fatalf("CreateUser (legacy): %v", err)
+	}
+
+	u, err := s.UserByToken(ctx, legacyToken)
+	if err != nil {
+		t.Fatalf("UserByToken (legacy): %v", err)
+	}
+	if u == nil {
+		t.Fatal("legacy token lookup returned nil, want user")
+	}
+	if u.Name != "legacy-user" {
+		t.Errorf("legacy user.Name = %q, want 'legacy-user'", u.Name)
+	}
+
+	// Unknown legacy token still returns nil.
+	u, err = s.UserByToken(ctx, "nonexistent-legacy-token")
+	if err != nil {
+		t.Fatalf("UserByToken (legacy unknown): %v", err)
+	}
+	if u != nil {
+		t.Errorf("expected nil for unknown legacy token, got %+v", u)
+	}
 }
 
 // TestUserByID covers the not-found (sql.ErrNoRows) path and the happy path.
@@ -173,7 +246,13 @@ func TestUserByID(t *testing.T) {
 	})
 
 	t.Run("known id returns the right user", func(t *testing.T) {
-		id, err := s.CreateUser(ctx, "dave", hashFor(t, "tok-dave"))
+		tok, err := auth.GenerateToken()
+		if err != nil {
+			t.Fatalf("GenerateToken: %v", err)
+		}
+		tid, secret := auth.SplitToken(tok)
+		h, _ := auth.HashToken(secret)
+		id, err := s.CreateUser(ctx, "dave", tid, h)
 		if err != nil {
 			t.Fatalf("CreateUser: %v", err)
 		}

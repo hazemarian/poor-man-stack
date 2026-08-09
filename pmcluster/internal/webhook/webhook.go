@@ -4,12 +4,13 @@
 //
 //	Body:     deploy.Payload as JSON
 //	Header:   X-Pmcluster-Signature: sha256=<hex>
+//	Header:   X-Pmcluster-Timestamp: <unix-seconds>    (REQUIRED for replay protection)
 //
-// The signature is HMAC-SHA256 over the raw request body with the shared
-// secret stored under the named source. Constant-time comparison on the
-// hex-decoded digest. The endpoint is unauthenticated (no Bearer token);
-// the HMAC IS the auth. CI systems can post freely as long as they hold
-// the source's shared secret.
+// The signature is HMAC-SHA256 over (timestamp + body) with the shared
+// secret stored under the named source.  Constant-time comparison on the
+// hex-decoded digest.  Requests older than 5 minutes are rejected.
+// The endpoint is unauthenticated (no Bearer token); the HMAC IS the auth.
+// CI systems can post freely as long as they hold the source's shared secret.
 package webhook
 
 import (
@@ -22,8 +23,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"go.opentelemetry.io/otel"
@@ -61,6 +64,14 @@ func webhookCounter() metric.Int64Counter {
 // so off-the-shelf CI integrations work.
 const SignatureHeader = "X-Pmcluster-Signature"
 
+// TimestampHeader carries the unix-seconds timestamp of the request.
+// The HMAC is computed over timestamp_seconds + body to prevent replays.
+const TimestampHeader = "X-Pmcluster-Timestamp"
+
+// MaxClockSkew is how far a timestamp may drift from the server's clock.
+// 5 minutes is generous for NTP-disciplined CI runners.
+const MaxClockSkew = 5 * time.Minute
+
 // MaxBodyBytes caps the webhook body. Manifests are <10 KB typically;
 // 1 MB leaves headroom and bounds HMAC compute cost from hostile callers.
 const MaxBodyBytes = 1 << 20
@@ -78,7 +89,7 @@ func (h *Handler) Mount(r chi.Router) {
 }
 
 // HTTP status discipline:
-//   - 401: any HMAC failure mode (missing/invalid sig, unknown source).
+//   - 401: any HMAC failure mode (missing/invalid sig, bad timestamp, unknown source).
 //     Same status for all so an attacker can't distinguish the cases.
 //   - 400: body too large, malformed JSON, or deploy validation failure.
 //   - 502: docker stack deploy returned an error.
@@ -114,7 +125,9 @@ func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.verifyHMAC(r.Context(), source, body, r.Header.Get(SignatureHeader)); err != nil {
+	timestamp, tsErr := parseTimestamp(r.Header.Get(TimestampHeader))
+
+	if err := h.verifyHMAC(r.Context(), source, timestamp, body, r.Header.Get(SignatureHeader), tsErr); err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
 		record("unauthorized")
 		return
@@ -146,9 +159,43 @@ func (h *Handler) receive(w http.ResponseWriter, r *http.Request) {
 	record("accepted")
 }
 
+// parseTimestamp returns the unix-seconds value.  If the header is empty
+// or unparseable, tsErr is non-nil and verifyHMAC handles it uniformly.
+func parseTimestamp(header string) (int64, error) {
+	if header == "" {
+		return 0, errors.New("missing timestamp header")
+	}
+	v, err := strconv.ParseInt(header, 10, 64)
+	if err != nil || v <= 0 {
+		return 0, fmt.Errorf("invalid timestamp: %q", header)
+	}
+	return v, nil
+}
+
 // verifyHMAC returns a non-nil error for ANY failure mode. Caller maps
 // every error to a single 401 to avoid leaking auth state.
-func (h *Handler) verifyHMAC(ctx context.Context, source string, body []byte, sigHeader string) error {
+//
+// Replay protection: the HMAC is computed over
+//
+//	timestamp_as_decimal_string + body
+//
+// and the timestamp must be within MaxClockSkew of the server's clock.
+func (h *Handler) verifyHMAC(ctx context.Context, source string, timestamp int64, body []byte, sigHeader string, tsErr error) error {
+	// Fail fast on missing/bad timestamp — same 401 path.
+	if tsErr != nil {
+		return tsErr
+	}
+
+	// Reject stale/future timestamps.
+	now := time.Now().Unix()
+	delta := now - timestamp
+	if delta < 0 {
+		delta = -delta
+	}
+	if delta > int64(MaxClockSkew.Seconds()) {
+		return fmt.Errorf("timestamp skew too large: %d seconds", delta)
+	}
+
 	if sigHeader == "" {
 		return errors.New("missing signature header")
 	}
@@ -171,7 +218,9 @@ func (h *Handler) verifyHMAC(ctx context.Context, source string, body []byte, si
 		return fmt.Errorf("decrypt secret for %s: %w", source, err)
 	}
 
+	// HMAC over timestamp_decimal + body.
 	mac := hmac.New(sha256.New, secret)
+	fmt.Fprint(mac, timestamp) // decimal string of unix seconds
 	mac.Write(body)
 	got := mac.Sum(nil)
 

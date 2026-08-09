@@ -75,10 +75,27 @@ func RecordOutcome(ctx context.Context, kind, status string) {
 // ServiceName matches the bundled backup-stack.yml (<stack>_<service>).
 const ServiceName = "backup_volume-backup"
 
-// LocalTrigger satisfies deploy.BackupTrigger via the package-level Trigger.
-type LocalTrigger struct{}
+// WALCheckpointer is implemented by *store.Store so backup.Trigger can
+// flush SQLite WAL before taking a volume snapshot.
+type WALCheckpointer interface {
+	WALCheckpoint(ctx context.Context) error
+}
 
-func (LocalTrigger) Trigger(ctx context.Context) ([]string, error) {
+// LocalTrigger satisfies deploy.BackupTrigger via the package-level Trigger.
+// If a WALCheckpointer is set, it is called before the backup exec to flush
+// pending transactions from the WAL to the main DB file.
+type LocalTrigger struct {
+	Store WALCheckpointer
+}
+
+func (lt LocalTrigger) Trigger(ctx context.Context) ([]string, error) {
+	// Flush SQLite WAL before the volume snapshot to avoid incomplete
+	// database state in the backup tarball.
+	if lt.Store != nil {
+		if err := lt.Store.WALCheckpoint(ctx); err != nil {
+			return nil, fmt.Errorf("wal checkpoint before backup: %w", err)
+		}
+	}
 	res, err := Trigger(ctx)
 	if err != nil {
 		if res != nil {

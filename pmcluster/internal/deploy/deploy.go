@@ -161,9 +161,13 @@ func (s *Service) Deploy(ctx context.Context, p Payload) (res *DeployResult, ret
 		return nil, fmt.Errorf("record deploy: %w", err)
 	}
 
-	// Best-effort: a flaky backup never blocks the deploy.
+	// Run pre-deploy backup.  Best-effort by default; abort if
+	// strict_backup: true and the backup fails.
 	if app.BackupBeforeDeploy {
-		s.runPreDeployBackup(ctx, app.Name, revision)
+		backupErr := s.runPreDeployBackup(ctx, app.Name, revision)
+		if backupErr != nil && app.StrictBackup {
+			return nil, fmt.Errorf("pre-deploy backup failed (strict_backup is set): %w", backupErr)
+		}
 	}
 
 	if err := s.Deployer.DeployStack(ctx, app.Name, rendered); err != nil {
@@ -244,23 +248,25 @@ func (s *Service) Rollback(ctx context.Context, stackName string, sourceRevision
 	}, nil
 }
 
-// runPreDeployBackup records its outcome in the audit table; never blocks.
-func (s *Service) runPreDeployBackup(ctx context.Context, stackName string, revision int64) {
+// runPreDeployBackup records its outcome in the audit table.  Returns an
+// error so callers can decide whether to abort the deploy.
+func (s *Service) runPreDeployBackup(ctx context.Context, stackName string, revision int64) error {
 	id, err := s.Store.CreateBackup(ctx, stackName, revision)
 	if err != nil {
-		return
+		return fmt.Errorf("create backup record: %w", err)
 	}
 	if s.Backup == nil {
 		_ = s.Store.FinishBackup(ctx, id, "failed", "", "no BackupTrigger configured (deploy.Service.Backup is nil)")
 		backup.RecordOutcome(ctx, backup.KindPreDeploy, backup.StatusFailed)
-		return
+		return fmt.Errorf("no backup trigger configured")
 	}
 	paths, err := s.Backup.Trigger(ctx)
 	if err != nil {
 		_ = s.Store.FinishBackup(ctx, id, "failed", strings.Join(paths, ","), err.Error())
 		backup.RecordOutcome(ctx, backup.KindPreDeploy, backup.StatusFailed)
-		return
+		return fmt.Errorf("backup trigger: %w", err)
 	}
 	_ = s.Store.FinishBackup(ctx, id, "succeeded", strings.Join(paths, ","), "")
 	backup.RecordOutcome(ctx, backup.KindPreDeploy, backup.StatusSucceeded)
+	return nil
 }

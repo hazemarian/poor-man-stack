@@ -13,12 +13,20 @@ import (
 // ErrUserExists is returned by CreateUser when the name is already taken.
 var ErrUserExists = errors.New("user already exists")
 
-// CreateUser stores a pre-hashed token; hashing is the caller's job
-// (auth.HashToken) so store doesn't pin auth's algorithm.
-func (s *Store) CreateUser(ctx context.Context, name, tokenHash string) (int64, error) {
+// CreateUser stores a user with a v2-format token.  tokenID is the hex
+// public-index part (from auth.SplitToken); tokenHash is the argon2id
+// hash of the secret.
+//
+// For legacy users (tokenID empty) the row is inserted with a NULL
+// token_id and will fall back to the O(N) scan path in UserByToken.
+func (s *Store) CreateUser(ctx context.Context, name, tokenID, tokenHash string) (int64, error) {
+	var tid sql.NullString
+	if tokenID != "" {
+		tid = sql.NullString{String: tokenID, Valid: true}
+	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO users (name, token_hash, created_at) VALUES (?, ?, ?)`,
-		name, tokenHash, time.Now().Unix(),
+		`INSERT INTO users (name, token_id, token_hash, created_at) VALUES (?, ?, ?, ?)`,
+		name, tid, tokenHash, time.Now().Unix(),
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -37,9 +45,59 @@ func (s *Store) CountUsers(ctx context.Context) (int, error) {
 	return n, nil
 }
 
-// UserByToken iterates all users (argon2id salts are per-row, so no index
-// is possible). O(N) is fine at single-digit user counts.
+// UserByToken looks up a user by bearer token.
+//
+//   - v2 tokens ("pmc_<id>_<secret>"): the token_id is extracted and used
+//     for a direct indexed lookup.  Argon2id runs exactly once against
+//     the matched row.
+//   - Legacy tokens (no "pmc_" prefix): falls back to the old O(N) scan,
+//     iterating every user row.  This path exists only for backwards
+//     compatibility; once all users have been re-issued v2 tokens, the
+//     fallback can be removed.
 func (s *Store) UserByToken(ctx context.Context, token string) (*auth.User, error) {
+	tokenID, secret := auth.SplitToken(token)
+
+	if tokenID != "" {
+		// v2 path — indexed lookup by token_id.
+		return s.userByTokenID(ctx, tokenID, secret)
+	}
+
+	// Legacy fallback — O(N) scan.  This still works but is slow under
+	// multi-user scenarios.  Operators should migrate to v2 tokens.
+	return s.userByTokenLegacy(ctx, token)
+}
+
+// userByTokenID does a single-row lookup by the public token_id and
+// verifies the argon2id hash against the secret.
+func (s *Store) userByTokenID(ctx context.Context, tokenID, secret string) (*auth.User, error) {
+	var (
+		u    auth.User
+		hash string
+	)
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, name, token_hash FROM users WHERE token_id = ?`, tokenID,
+	).Scan(&u.ID, &u.Name, &hash)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil // unknown token_id, not an error
+		}
+		return nil, fmt.Errorf("query user by token_id: %w", err)
+	}
+	ok, err := auth.VerifyToken(secret, hash)
+	if err != nil {
+		// Corrupt hash row — log-worthy but return nil to avoid lockout.
+		return nil, nil
+	}
+	if !ok {
+		return nil, nil
+	}
+	return &u, nil
+}
+
+// userByTokenLegacy is the old O(N) scan kept for backwards compatibility
+// with pre-v2 tokens.  It iterates ALL user rows and runs argon2id against
+// each until a match is found.
+func (s *Store) userByTokenLegacy(ctx context.Context, token string) (*auth.User, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id, name, token_hash FROM users`)
 	if err != nil {
 		return nil, fmt.Errorf("query users: %w", err)

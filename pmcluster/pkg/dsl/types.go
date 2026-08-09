@@ -28,8 +28,14 @@ type App struct {
 	Services map[string]*Service `json:"services"`
 
 	// BackupBeforeDeploy triggers an offen volume backup on the local
-	// node before docker stack deploy. Failures never block the deploy.
+	// node before docker stack deploy. Failures never block the deploy
+	// unless StrictBackup is also true.
 	BackupBeforeDeploy bool `json:"backup_before_deploy,omitempty"`
+
+	// StrictBackup, when true and BackupBeforeDeploy is also true, aborts
+	// the deployment if the pre-deploy backup fails.  The default
+	// (false) preserves the old best-effort behaviour.
+	StrictBackup bool `json:"strict_backup,omitempty"`
 }
 
 type Service struct {

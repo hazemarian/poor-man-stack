@@ -111,11 +111,12 @@ func createUser(ctx context.Context, st *store.Store, name string) (string, erro
 	if err != nil {
 		return "", fmt.Errorf("generate token: %w", err)
 	}
-	hash, err := auth.HashToken(token)
+	tokenID, secret := auth.SplitToken(token)
+	hash, err := auth.HashToken(secret)
 	if err != nil {
 		return "", fmt.Errorf("hash token: %w", err)
 	}
-	if _, err := st.CreateUser(ctx, name, hash); err != nil {
+	if _, err := st.CreateUser(ctx, name, tokenID, hash); err != nil {
 		return "", fmt.Errorf("insert user: %w", err)
 	}
 	return token, nil

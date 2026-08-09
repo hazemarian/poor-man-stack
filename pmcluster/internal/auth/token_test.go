@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/hex"
 	"strings"
 	"testing"
 )
@@ -23,6 +24,37 @@ func TestGenerateToken_RandomAndLongEnough(t *testing.T) {
 	if len(a) < 40 {
 		t.Errorf("token too short: %d chars", len(a))
 	}
+
+	// v2 format: pmc_<8 hex>_<base64 secret>
+	if !strings.HasPrefix(a, v2TokenPrefix) {
+		t.Errorf("token missing v2 prefix: %s", a)
+	}
+
+	tid, sec := SplitToken(a)
+	if tid == "" {
+		t.Error("SplitToken: token_id is empty for v2 token")
+	}
+	if sec == "" {
+		t.Error("SplitToken: secret is empty for v2 token")
+	}
+	if len(tid) != 8 {
+		t.Errorf("token_id length = %d, want 8", len(tid))
+	}
+	// Verify the token_id is valid hex.
+	if _, err := hex.DecodeString(tid); err != nil {
+		t.Errorf("token_id is not valid hex: %s", tid)
+	}
+}
+
+func TestSplitToken_Legacy(t *testing.T) {
+	// A legacy token is just a bare base64 string — no prefix, no underscore.
+	tid, sec := SplitToken("some-old-plain-token")
+	if tid != "" {
+		t.Errorf("legacy SplitToken: tokenID = %q, want empty", tid)
+	}
+	if sec != "some-old-plain-token" {
+		t.Errorf("legacy SplitToken: secret = %q, want original token", sec)
+	}
 }
 
 func TestHashAndVerify_RoundTrip(t *testing.T) {
@@ -30,14 +62,20 @@ func TestHashAndVerify_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gen: %v", err)
 	}
-	h, err := HashToken(tok)
+
+	// Split the token and hash only the secret part — that's what the store
+	// should do.
+	_, secret := SplitToken(tok)
+	h, err := HashToken(secret)
 	if err != nil {
 		t.Fatalf("hash: %v", err)
 	}
 	if !strings.HasPrefix(h, hashPrefix) {
 		t.Errorf("missing hash prefix: %s", h)
 	}
-	ok, err := VerifyToken(tok, h)
+
+	// Verify with the full token — the verifier also uses only the secret.
+	ok, err := VerifyToken(secret, h)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -70,6 +108,17 @@ func TestVerifyToken_MalformedHash(t *testing.T) {
 func TestHashToken_EmptyRejected(t *testing.T) {
 	if _, err := HashToken(""); err != ErrInvalidToken {
 		t.Errorf("err = %v, want ErrInvalidToken", err)
+	}
+}
+
+func TestFastHash(t *testing.T) {
+	h := FastHash("hello")
+	if len(h) != 64 {
+		t.Errorf("FastHash length = %d, want 64", len(h))
+	}
+	// Deterministic.
+	if FastHash("hello") != h {
+		t.Error("FastHash is not deterministic")
 	}
 }
 

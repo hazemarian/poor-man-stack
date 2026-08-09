@@ -55,6 +55,14 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// WALCheckpoint flushes all pending WAL transactions to the main
+// database file so volume-level snapshots capture a consistent state.
+// Uses TRUNCATE to also reset the WAL file size (ideal before backups).
+func (s *Store) WALCheckpoint(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)")
+	return err
+}
+
 // DB is for tests and migration inspection — production code uses the
 // typed methods on Store.
 func (s *Store) DB() *sql.DB { return s.db }
