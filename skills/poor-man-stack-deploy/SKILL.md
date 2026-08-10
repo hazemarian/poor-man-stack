@@ -7,6 +7,9 @@ description: >
   (up/down/status). Use when deploying applications to a Docker Swarm-based cluster
   managed by pmcluster, or when setting up CI/CD pipelines targeting pmcluster.
   Do NOT use for Docker/Kubernetes deployments outside this stack.
+
+  As of v2 tokens (pmc_ prefix), webhook timestamps are required; see "CI/CD Webhook
+  Setup" and "Authentication" sections for breaking changes.
 ---
 
 # Poor Man's Stack — Deploy Skill
@@ -55,6 +58,54 @@ The daemon must be running for the REST API:
 pmcluster serve   # foreground; supervise via systemd for production
 ```
 
+## Authentication & API Tokens
+
+pmcluster uses Bearer tokens for API authentication. Tokens are generated once by
+`pmcluster init` and printed to stdout — save them immediately; they cannot be
+recovered.
+
+### Token Format
+
+As of pmcluster v2, tokens use a structured format:
+
+```
+pmc_<hex_token_id>_<base64_secret>
+```
+
+- `pmc_` — fixed prefix identifying v2 tokens
+- `hex_token_id` — 8 hex chars (4 random bytes), the public index used for fast
+  database lookup
+- `base64_secret` — 32 random bytes, base64url-encoded (~43 chars); this is the
+  sensitive part
+
+**Breaking change**: Legacy tokens (plain base64 strings without the `pmc_`
+prefix) still work for now but trigger a slower fallback lookup. Operators
+should regenerate users to get v2 tokens.
+
+### Creating additional users
+
+```bash
+pmcluster user create my-user
+# Prints the token ONCE — save it.
+```
+
+All API requests pass the token as a Bearer header:
+
+```bash
+curl -H "Authorization: Bearer pmc_a1b2c3d4_..." http://localhost:8420/api/me
+```
+
+### Rate Limiting
+
+The daemon enforces per-IP rate limits:
+
+| Path prefix   | Limit               |
+|---------------|---------------------|
+| `/api/*`      | 100 req/s, 200 burst |
+| `/webhook/*`  | 20 req/s, 30 burst   |
+
+Exceeding the limit returns HTTP 429 with `Retry-After: 1`.
+
 ## Manifest DSL Format
 
 Create a `.yaml` manifest for each service. The schema:
@@ -67,6 +118,9 @@ registry: ghcr.io/my-org       # optional — container registry
 version: latest                # optional — default image tag (overridable at deploy)
 
 backup_before_deploy: true     # optional — trigger offen volume snapshot before deploy
+strict_backup: true             # optional — abort deploy if the pre-deploy backup fails
+                                #   (requires backup_before_deploy: true; defaults to false,
+                                #    meaning backup failures are logged but non-blocking)
 
 secrets:                       # optional — external Swarm secrets (must already exist)
   - my_app_db_password
@@ -194,6 +248,11 @@ curl -X POST https://pmcluster.example.com/api/stacks/my-app/rollback \
 
 ## CI/CD Webhook Setup
 
+Webhooks are authenticated via HMAC-SHA256, not Bearer tokens. Each webhook source
+has a shared secret; the CI system computes a signature over the request and pmcluster
+verifies it server-side. **Breaking change**: as of pmcluster v2, a timestamp header
+is required for replay protection.
+
 ### 1. Create a webhook source on the manager
 
 ```bash
@@ -203,25 +262,37 @@ pmcluster webhook add github-prod
 
 ### 2. Configure CI (e.g., GitHub Actions)
 
+Two headers are required on every webhook request:
+
+| Header                   | Value                                    |
+|--------------------------|------------------------------------------|
+| `X-Pmcluster-Timestamp`  | Unix seconds of the request              |
+| `X-Pmcluster-Signature`  | `sha256=<hex>` HMAC over timestamp+body  |
+
+**The HMAC input is**: `timestamp_as_decimal_string + body` (no separator).
+Timestamps more than 5 minutes old (or from the future) are rejected.
+
 ```yaml
 jobs:
   deploy:
     steps:
       - name: Deploy to pmcluster
         run: |
+          TIMESTAMP=$(date +%s)
           BODY='{"app": "my-app", "version": "${{ github.sha }}", "manifest": "'$(cat manifest.yaml | jq -Rs . | cut -c2- | rev | cut -c2- | rev)'"}'
-          SIG=$(echo -n "$BODY" | openssl dgst -sha256 -hmac "${{ secrets.PMCLUSTER_WEBHOOK_SECRET }}" | awk '{print "sha256=" $2}')
+          SIG=$(echo -n "${TIMESTAMP}${BODY}" | openssl dgst -sha256 -hmac "${{ secrets.PMCLUSTER_WEBHOOK_SECRET }}" | awk '{print "sha256=" $2}')
           curl -X POST https://pmcluster.example.com/webhook/github-prod \
+            -H "X-Pmcluster-Timestamp: $TIMESTAMP" \
             -H "X-Pmcluster-Signature: $SIG" \
             -H "Content-Type: application/json" \
             -d "$BODY"
 ```
 
-The signature is HMAC-SHA256 over the request body, hex-encoded, prefixed with `sha256=`.
-
 ### 3. Verify webhook
 
-The webhook `source` is the name you gave it (`github-prod`). Requests with wrong secret, wrong source, or missing signature all return a generic 401 — no information leak.
+The webhook `source` is the name you gave it (`github-prod`). Requests with wrong
+secret, wrong source, bad/missing timestamp, or missing signature all return a
+generic 401 — no information leak.
 
 List webhooks: `pmcluster webhook list`
 Remove: `pmcluster webhook remove github-prod`
@@ -247,7 +318,19 @@ pmcluster registry list                   # verify
 
 ## Pre-Deploy Backups
 
-Add `backup_before_deploy: true` to a manifest to trigger an offen volume snapshot before deployment. The deploy proceeds even if the backup fails (flaky backup shouldn't block urgent rollouts):
+Add `backup_before_deploy: true` to a manifest to trigger an offen volume snapshot
+before deployment. By default the deploy proceeds even if the backup fails (best-effort
+semantics — a flaky backup shouldn't block urgent rollouts).
+
+To abort the deploy on backup failure, also set `strict_backup: true`:
+
+```yaml
+backup_before_deploy: true
+strict_backup: true   # abort the deploy if the backup fails
+```
+
+The daemon flushes the SQLite WAL (PRAGMA wal_checkpoint) before triggering each
+backup to ensure the volume snapshot captures a consistent database state.
 
 ```bash
 pmcluster backup list                      # audit log of every triggered run
@@ -299,5 +382,24 @@ Run `pmcluster stack list` to see deployed stacks. Stack names come from the `ap
 ### Deploy fails
 Check the Swarm service logs: `docker service logs my-app_api --tail=50`. Inspect the translated compose: `pmcluster deploy ./manifest.yaml --dry-run`.
 
+### Deploy blocked by strict backup failure
+If `strict_backup: true` is set and the pre-deploy backup fails, the deploy aborts.
+Check the backup audit log: `pmcluster backup list`. Fix the backup issue or
+remove `strict_backup: true` from the manifest to allow best-effort deploys.
+
 ### Worker node can't pull images
 Ensure `pmcluster serve` is running (it replays registry credentials). Verify the registry was added: `pmcluster registry list`.
+
+### Webhook returns 401
+Three common causes:
+1. **Missing/incorrect `X-Pmcluster-Timestamp` header** — now required. Must be
+   current unix seconds within a 5-minute window.
+2. **Wrong HMAC input** — the signature is now over `timestamp + body` (no
+   separator), not body alone.
+3. **Wrong webhook secret** — check with `pmcluster webhook list`; recreate with
+   `pmcluster webhook remove <source> && pmcluster webhook add <source>`.
+
+### Rate limited (HTTP 429)
+The API returns 429 when per-IP limits are exceeded. For bursty CI pipelines,
+space out requests or batch them. Limits: 100 req/s for `/api/*`, 20 req/s
+for `/webhook/*`.
