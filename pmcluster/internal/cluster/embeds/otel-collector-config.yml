@@ -132,7 +132,7 @@ service:
   extensions: [health_check, docker_observer]
   telemetry:
     logs:
-      level: warn
+      level: info
   pipelines:
     logs:
       receivers:  [receiver_creator, otlp]
