@@ -221,9 +221,10 @@ func TestRenderOTelCollectorConfig_FilelogReceiver(t *testing.T) {
 	if !strings.Contains(body, "filter/skip_filelog") {
 		t.Error("rendered config should contain filter/skip_filelog processor")
 	}
-	// The OTTL expression uses double-escaped dots because the label key
-	// contains dots that must be literal in the resource attribute path.
-	if !strings.Contains(body, `container.labels.io\\.pmcluster\\.skip_filelog`) {
+	// The rendered YAML escapes dots in the label key with \\.
+	// In the raw template output, dots are preceded by two backslashes.
+	skipFilelogExpr := "container.labels.io" + "\\" + "\\" + ".pmcluster" + "\\" + "\\" + ".skip_filelog"
+	if !strings.Contains(body, skipFilelogExpr) {
 		t.Error("rendered config should contain the OTTL filter for io.pmcluster.skip_filelog label")
 	}
 	// The logs pipeline must include filter/skip_filelog before batch.

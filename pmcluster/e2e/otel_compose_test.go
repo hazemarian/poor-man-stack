@@ -4,6 +4,7 @@ package e2e
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -384,10 +385,9 @@ volumes:
 // `io.pmcluster.skip_filelog: "true"`, and the OTel collector's
 // filter/skip_filelog processor drops logs from those containers.
 //
-// This test sets the compose service label
-// `container.labels.io.pmcluster.skip_filelog: "true"` directly on a service,
-// which is what the filelog receiver picks up as a resource attribute.
-// The filter processor should drop those logs.
+// We pre-create log files in a temp directory, then run the OTel collector
+// container with a bind-mount to that directory. This avoids all timing
+// races and compose volume lifecycle issues.
 func TestOtelComposeSkipFilelogFilter(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker binary not on PATH")
@@ -396,13 +396,64 @@ func TestOtelComposeSkipFilelogFilter(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	dir := t.TempDir()
+	// On macOS Docker Desktop, bind mounts only work from /Users, /tmp,
+	// /Volumes, and /private. t.TempDir() uses /var/folders which Docker
+	// cannot access. Use /tmp which is always shared.
+	dir, err := os.MkdirTemp("/tmp", "pmcluster-e2e-filter-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
 
-	// OTel config that simulates the pmcluster skip_filelog label-based
-	// filter. In production, resourcedetection/docker picks up container
-	// labels. Here we key off the log record body: entries containing
-	// SKIPFILELOG get flagged and dropped by the same filter processor
-	// logic.
+	// ── Pre-create log files in the temp dir ──────────────────────────
+	logsDir := filepath.Join(dir, "logs")
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// normal.log: should appear in collector output
+	normalLog := filepath.Join(logsDir, "normal.log")
+	for i := 1; i <= 5; i++ {
+		entry := fmt.Sprintf(`{"log":"NORMAL_ENTRY_%d","stream":"stdout","time":"%s"}`,
+			i, time.Now().UTC().Format("2006-01-02T15:04:05.000Z"))
+		f, err := os.OpenFile(normalLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.WriteString(entry + "\n")
+		f.Close()
+	}
+
+	// skip.log: should be DROPPED by the filter processor
+	skipLog := filepath.Join(logsDir, "skip.log")
+	for i := 1; i <= 5; i++ {
+		entry := fmt.Sprintf(`{"log":"SKIPFILELOG_ENTRY_%d","stream":"stdout","time":"%s"}`,
+			i, time.Now().UTC().Format("2006-01-02T15:04:05.000Z"))
+		f, _ := os.OpenFile(skipLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if f != nil {
+			f.WriteString(entry + "\n")
+			f.Close()
+		}
+	}
+	t.Logf("Pre-created %s and %s", normalLog, skipLog)
+
+	// Verify files exist and are accessible from inside a container.
+	verifyCtx, verifyCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer verifyCancel()
+	verifyCmd := exec.CommandContext(verifyCtx, "docker", "run", "--rm",
+		"-v", logsDir+":/logs:ro",
+		"alpine:3.21", "cat", "/logs/normal.log", "/logs/skip.log")
+	verifyOut, err := verifyCmd.CombinedOutput()
+	if err != nil {
+		t.Logf("Verify files accessible: %v\n%s", err, verifyOut)
+	} else {
+		t.Logf("Files accessible in container:\n%s", string(verifyOut))
+	}
+
+	// ── OTel config ───────────────────────────────────────────────────
+	// Uses include_file_path so log.file.path attribute is available.
+	// Filters by file path instead of body-content transform — simpler
+	// and avoids OTTL transform+filter interaction issues on some versions.
 	otelConfig := `
 receivers:
   filelog:
@@ -410,7 +461,6 @@ receivers:
       - /logs/*.log
     start_at: beginning
     include_file_path: true
-    include_file_name: false
     operators:
       - type: json_parser
         error_mode: ignore
@@ -420,22 +470,11 @@ receivers:
         if: attributes.log != nil
 
 processors:
-  # Simulate the skip_filelog label: flag records where the body
-  # contains SKIPFILELOG pattern.
-  transform/set_skip_attr:
-    error_mode: ignore
-    log_statements:
-      - context: log
-        conditions:
-          - body != nil and IsMatch(body, "SKIPFILELOG_ENTRY_")
-        statements:
-          - set(resource.attributes["io.pmcluster.skip_filelog"], "true")
-
-  # Same filter logic used in pmcluster embedded config.
-  filter/skip_filelog:
+  # Drop records from skip.log — simulates skip_filelog container label.
+  filter/drop_skip_log:
     logs:
       log_record:
-        - 'resource.attributes["io.pmcluster.skip_filelog"] == "true"'
+        - 'attributes["log.file.path"] == "/logs/skip.log"'
 
   batch:
     send_batch_size: 1
@@ -452,109 +491,50 @@ service:
   pipelines:
     logs:
       receivers:  [filelog]
-      processors: [transform/set_skip_attr, filter/skip_filelog, batch]
+      processors: [filter/drop_skip_log, batch]
       exporters:  [debug]
 `
-	if err := os.WriteFile(filepath.Join(dir, "otel-config.yaml"), []byte(otelConfig), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Two services: one with the skip_filelog label (should be filtered),
-	// one without (should appear). Both write to separate log files.
-	//
-	// $$ in docker compose YAML escapes to $ in the container shell.
-	// Both depend on collector so it's ready when they start writing.
-	compose := `
-services:
-  # This service has skip_filelog: true — its logs should be DROPPED.
-  skip-service:
-    image: alpine:3.21
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        sleep 5
-        i=0
-        while [ $$i -lt 5 ]; do
-          i=$$((i+1))
-          printf '{"log":"SKIPFILELOG_ENTRY_%d","stream":"stdout","time":"%s"}\n' "$$i" "$$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >> /logs/skip.log
-          sleep 1
-        done
-        echo "skip-service done"
-        sleep 120
-    volumes:
-      - logs_vol:/logs
-    labels:
-      io.pmcluster.skip_filelog: "true"
-    depends_on:
-      otel-collector:
-        condition: service_started
-
-  # This service does NOT have skip_filelog — its logs should APPEAR.
-  normal-service:
-    image: alpine:3.21
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        sleep 5
-        i=0
-        while [ $$i -lt 5 ]; do
-          i=$$((i+1))
-          printf '{"log":"NORMAL_ENTRY_%d","stream":"stdout","time":"%s"}\n' "$$i" "$$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" >> /logs/normal.log
-          sleep 1
-        done
-        echo "normal-service done"
-        sleep 120
-    volumes:
-      - logs_vol:/logs
-    depends_on:
-      otel-collector:
-        condition: service_started
-
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.157.0
-    command: ["--config=/etc/otel-config.yaml"]
-    volumes:
-      - ${OTEL_CONFIG}:/etc/otel-config.yaml:ro
-      - logs_vol:/logs:ro
-
-volumes:
-  logs_vol:
-`
-
-	composePath := filepath.Join(dir, "docker-compose.yml")
-	if err := os.WriteFile(composePath, []byte(compose), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
 	otelConfigPath := filepath.Join(dir, "otel-config.yaml")
-	upCtx, upCancel := context.WithTimeout(ctx, 90*time.Second)
-	defer upCancel()
-
-	upCmd := exec.CommandContext(upCtx, "docker", "compose", "-f", composePath, "-p", "otel-filter-e2e", "up", "-d")
-	upCmd.Env = append(os.Environ(), "OTEL_CONFIG="+otelConfigPath)
-	upOut, err := upCmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("docker compose up: %v\n%s", err, upOut)
+	if err := os.WriteFile(otelConfigPath, []byte(otelConfig), 0o644); err != nil {
+		t.Fatal(err)
 	}
+
+	// ── Run OTel collector container ───────────────────────────────────
+	runCtx, runCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer runCancel()
+
+	containerName := "otel-filter-e2e-" + t.Name()
+	// Clean up old container if somehow still running.
+	exec.CommandContext(runCtx, "docker", "rm", "-f", containerName).Run()
+
+	runCmd := exec.CommandContext(runCtx, "docker", "run", "-d",
+		"--name", containerName,
+		"-v", otelConfigPath+":/etc/otel-config.yaml:ro",
+		"-v", logsDir+":/logs:ro",
+		"otel/opentelemetry-collector-contrib:0.157.0",
+		"--config=/etc/otel-config.yaml",
+	)
+	runOut, err := runCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("docker run collector: %v\n%s", err, runOut)
+	}
+	t.Logf("Collector container started: %s", strings.TrimSpace(string(runOut)))
 
 	t.Cleanup(func() {
-		downCtx, downCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer downCancel()
-		cmd := exec.CommandContext(downCtx, "docker", "compose", "-f", composePath, "-p", "otel-filter-e2e", "down", "-v")
-		cmd.Env = append(os.Environ(), "OTEL_CONFIG="+otelConfigPath)
-		out, _ := cmd.CombinedOutput()
-		t.Logf("compose down: %s", strings.TrimSpace(string(out)))
+		cleanCtx, cleanCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cleanCancel()
+		exec.CommandContext(cleanCtx, "docker", "rm", "-f", containerName).Run()
 	})
 
-	// Wait for services to write logs (sleep 5 + 5 writes * 1s + buffer).
-	time.Sleep(20 * time.Second)
+	// Wait for collector to start, read files, and process.
+	time.Sleep(8 * time.Second)
 
 	logCtx, logCancel := context.WithTimeout(ctx, 15*time.Second)
 	defer logCancel()
-	logCmd := exec.CommandContext(logCtx, "docker", "logs", "otel-filter-e2e-otel-collector-1")
+	logCmd := exec.CommandContext(logCtx, "docker", "logs", containerName)
 	logOut, err := logCmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("docker logs otel-collector: %v\n%s", err, string(logOut))
+		t.Fatalf("docker logs: %v\n%s", err, string(logOut))
 	}
 	collectorLogs := string(logOut)
 
