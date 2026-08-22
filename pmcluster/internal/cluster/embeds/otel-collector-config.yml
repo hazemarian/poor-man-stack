@@ -36,7 +36,7 @@ receivers:
       __FILELOG_EXCLUDE_PATTERNS__
     include_file_name: false
     include_file_path: true
-    start_at: end
+    start_at: beginning
     operators:
       # Parse Docker JSON log format: {"log":"...","stream":"stdout|stderr","time":"..."}
       - type: json_parser
