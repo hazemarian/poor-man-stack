@@ -147,9 +147,6 @@ func RenderOTelCollectorConfig(in RenderInput) ([]byte, error) {
 		return nil, err
 	}
 	rendered := strings.ReplaceAll(body, "__BASIC_AUTH_PLACEHOLDER__", basicAuth)
-	// __FILELOG_EXCLUDE_PATTERNS__ → empty by default; populated
-	// from cluster deploy when services have skip_filelog: true.
-	rendered = strings.ReplaceAll(rendered, "__FILELOG_EXCLUDE_PATTERNS__", "")
 	return []byte(rendered), nil
 }
 

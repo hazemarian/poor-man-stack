@@ -211,14 +211,28 @@ func TestRenderOTelCollectorConfig_FilelogReceiver(t *testing.T) {
 		}
 	}
 
-	// __FILELOG_EXCLUDE_PATTERNS__ should have been replaced (empty string for now).
-	if strings.Contains(body, "__FILELOG_EXCLUDE_PATTERNS__") {
-		t.Error("rendered config should not contain unreplaced placeholder __FILELOG_EXCLUDE_PATTERNS__")
-	}
-
 	// Must NOT contain the old observer-based approach.
 	if strings.Contains(body, "docker_observer") {
 		t.Error("rendered config should not contain docker_observer")
+	}
+
+	// Must contain the filter/skip_filelog processor with the correct OTTL
+	// expression that matches the `io.pmcluster.skip_filelog` container label.
+	if !strings.Contains(body, "filter/skip_filelog") {
+		t.Error("rendered config should contain filter/skip_filelog processor")
+	}
+	// The OTTL expression uses double-escaped dots because the label key
+	// contains dots that must be literal in the resource attribute path.
+	if !strings.Contains(body, `container.labels.io\\.pmcluster\\.skip_filelog`) {
+		t.Error("rendered config should contain the OTTL filter for io.pmcluster.skip_filelog label")
+	}
+	// The logs pipeline must include filter/skip_filelog before batch.
+	if !strings.Contains(body, "processors: [resourcedetection, resource, filter/skip_filelog, batch]") {
+		t.Error("logs pipeline should list filter/skip_filelog processor before batch")
+	}
+	// Verify no old placeholder remains.
+	if strings.Contains(body, "__FILELOG_EXCLUDE_PATTERNS__") {
+		t.Error("rendered config should NOT contain __FILELOG_EXCLUDE_PATTERNS__ (label-based approach replaces it)")
 	}
 }
 

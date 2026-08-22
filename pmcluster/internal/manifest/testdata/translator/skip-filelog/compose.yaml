@@ -1,0 +1,23 @@
+networks:
+  skipfilelog-app-net:
+    driver: overlay
+services:
+  otlp-service:
+    deploy:
+      labels:
+        application: skipfilelog-app
+        environment: production
+        io.pmcluster.skip_filelog: "true"
+        service: otlp-service
+        version: latest
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      update_config:
+        delay: 10s
+        order: start-first
+        parallelism: 1
+    image: myapp:latest
+    networks:
+    - skipfilelog-app-net
+version: "3.9"

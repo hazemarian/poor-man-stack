@@ -24,6 +24,11 @@ const (
 	labelApplication = "application"
 	labelEnvironment = "environment"
 	labelVersion     = "version"
+
+	// labelSkipFilelog is set on Swarm deploy labels when a service
+	// opts out of filelog scraping (skip_filelog: true). The OTel
+	// collector's filter processor drops these logs.
+	labelSkipFilelog = "io.pmcluster.skip_filelog"
 )
 
 // Translate renders a validated, interpolated *dsl.App into compose v3.9
@@ -198,6 +203,10 @@ func translateDeploy(app *dsl.App, name string, s *dsl.Service) *composeDeploy {
 
 	if s.Expose != nil {
 		addTraefikLabels(d.Labels, app, name, s.Expose)
+	}
+
+	if s.SkipFilelog {
+		d.Labels[labelSkipFilelog] = "true"
 	}
 
 	return d

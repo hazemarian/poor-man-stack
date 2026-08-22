@@ -1,0 +1,7 @@
+app: skipfilelog-app
+env: production
+domain: example.com
+services:
+  otlp-service:
+    image: myapp:latest
+    skip_filelog: true

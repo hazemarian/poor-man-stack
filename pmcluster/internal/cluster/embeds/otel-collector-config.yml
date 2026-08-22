@@ -33,7 +33,6 @@ receivers:
     exclude:
       - /var/lib/docker/containers/*otel-collector*/*-json.log
       - /var/lib/docker/containers/*openobserve*/*-json.log
-      __FILELOG_EXCLUDE_PATTERNS__
     include_file_name: false
     include_file_path: true
     start_at: beginning
@@ -54,6 +53,13 @@ receivers:
         if: attributes.log != nil
 
 processors:
+  # Drop logs from services that opted out via skip_filelog: true.
+  # These services send logs via OTLP instead of stdout/stderr.
+  filter/skip_filelog:
+    logs:
+      log_record:
+        - 'resource.attributes["container.labels.io\\.pmcluster\\.skip_filelog"] == "true"'
+
   resource:
     attributes:
       - key: service.name
@@ -88,7 +94,7 @@ service:
   pipelines:
     logs:
       receivers:  [filelog, otlp]
-      processors: [resourcedetection, resource, batch]
+      processors: [resourcedetection, resource, filter/skip_filelog, batch]
       exporters:  [otlp/openobserve]
     metrics:
       receivers:  [docker_stats, otlp]

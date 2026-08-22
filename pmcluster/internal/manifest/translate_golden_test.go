@@ -98,6 +98,12 @@ func TestTranslate_Golden(t *testing.T) {
 			},
 			// Absence checks done inline in the test body below for this case.
 		},
+		{
+			name: "skip-filelog",
+			expectedContains: []string{
+				"io.pmcluster.skip_filelog",
+			},
+		},
 	}
 
 	for _, tc := range cases {
