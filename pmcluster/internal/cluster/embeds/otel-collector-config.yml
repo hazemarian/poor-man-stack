@@ -2,10 +2,6 @@
 extensions:
   health_check:
 
-  docker_observer:
-    endpoint: "unix:///var/run/docker.sock"
-    cache_sync_interval: 5s
-
 receivers:
   otlp:
     protocols:
@@ -22,59 +18,40 @@ receivers:
       com.docker.swarm.node.id:      "swarm.node.id"
       com.docker.swarm.task.name:    "container.name"
 
-  receiver_creator:
-    watch_observers: [docker_observer]
-    receivers:
-      filelog:
-        rule: type == "container" and labels["io.otel.skip_file_logs"] != "true"
-        config:
-          include:
-            - "/var/lib/docker/containers/__BT__container_id__BT__/__BT__container_id__BT__-json.log"
-          exclude:
-            - "/var/lib/docker/containers/*otel-collector*/*-json.log"
-          include_file_name: false
-          start_at: end
-          storage: null
-          attributes:
-            container.name:       "__BT__name__BT__"
-            container.id:         "__BT__container_id__BT__"
-            service.name:         "__BT__labels[\"com.docker.swarm.service.name\"]__BT__"
-            service.namespace:    "__BT__labels[\"com.docker.stack.namespace\"]__BT__"
-            container.image.name: "__BT__image__BT__"
-          operators:
-            - type: json_parser
-              error_mode: ignore
-              timestamp:
-                parse_from: attributes.time
-                layout: '%Y-%m-%dT%H:%M:%S.%LZ'
-              severity:
-                parse_from: attributes.stream
-                mapping: { info: stdout, error: stderr }
-            - type: move
-              from: attributes.log
-              to: body
-              if: attributes.log != nil
-            - type: remove
-              field: attributes.time
-              if: attributes.time != nil
-            - type: remove
-              field: attributes.stream
-              if: attributes.stream != nil
-            - type: recombine
-              combine_field: body
-              is_first_entry: body matches "^\\d{4}-\\d{2}-\\d{2}|^\\[?\\d{4}-\\d{2}-\\d{2}"
-              source_identifier: attributes["container.id"]
+  filelog:
+    include:
+      - /var/lib/docker/containers/*/*-json.log
+    exclude:
+      - /var/lib/docker/containers/*otel-collector*/*-json.log
+      - /var/lib/docker/containers/*openobserve*/*-json.log
+    include_file_name: false
+    include_file_path: true
+    start_at: end
+    operators:
+      - type: json_parser
+        error_mode: ignore
+        timestamp:
+          parse_from: attributes.time
+          layout: '%Y-%m-%dT%H:%M:%S.%LZ'
+        severity:
+          parse_from: attributes.stream
+          mapping: { info: stdout, error: stderr }
+      - type: move
+        from: attributes.log
+        to: body
+        if: attributes.log != nil
+      - type: remove
+        field: attributes.time
+        if: attributes.time != nil
+      - type: remove
+        field: attributes.stream
+        if: attributes.stream != nil
+      - type: recombine
+        combine_field: body
+        is_first_entry: body matches "^\\d{4}-\\d{2}-\\d{2}|^\\[?\\d{4}-\\d{2}-\\d{2}"
+        source_identifier: attributes["log.file.path"]
 
 processors:
-  resource:
-    attributes:
-      - key: service.name
-        action: upsert
-        from_attribute: "container.labels.com.docker.swarm.service.name"
-      - key: stack.name
-        action: upsert
-        from_attribute: "container.labels.com.docker.stack.namespace"
-
   resourcedetection:
     detectors: [system, docker]
     override: false
@@ -129,14 +106,14 @@ exporters:
       organization: "default"
 
 service:
-  extensions: [health_check, docker_observer]
+  extensions: [health_check]
   telemetry:
     logs:
       level: info
   pipelines:
     logs:
-      receivers:  [receiver_creator, otlp]
-      processors: [resource, filter/noise, transform, batch]
+      receivers:  [filelog, otlp]
+      processors: [filter/noise, transform, batch]
       exporters:  [otlp/openobserve]
     metrics:
       receivers:  [docker_stats, otlp]

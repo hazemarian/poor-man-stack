@@ -184,15 +184,14 @@ func TestRenderOTelCollectorConfig_NoiseFilterInPipeline(t *testing.T) {
 	}
 
 	// The logs pipeline must place filter/noise before transform.
-	if !strings.Contains(body, "[resource, filter/noise, transform, batch]") {
+	if !strings.Contains(body, "[filter/noise, transform, batch]") {
 		t.Error("logs pipeline must include filter/noise before transform")
 	}
 }
 
-// TestRenderOTelCollectorConfig_ReceiverCreatorAttributes verifies that
-// receiver_creator attributes use unquoted backtick expressions (not
-// double-quoted backtick strings) so the collector can parse them.
-func TestRenderOTelCollectorConfig_ReceiverCreatorAttributes(t *testing.T) {
+// TestRenderOTelCollectorConfig_FilelogReceiver verifies that the static
+// filelog receiver is configured with the correct glob patterns and operators.
+func TestRenderOTelCollectorConfig_FilelogReceiver(t *testing.T) {
 	in := RenderInput{
 		OpenObserveAdminEmail:    "admin@x.com",
 		OpenObserveAdminPassword: "pw",
@@ -203,32 +202,29 @@ func TestRenderOTelCollectorConfig_ReceiverCreatorAttributes(t *testing.T) {
 	}
 	body := string(data)
 
-	// Placeholders must be fully substituted.
-	for _, ph := range []string{"__BT__", "__QT__"} {
-		if strings.Contains(body, ph) {
-			t.Errorf("placeholder %q was not substituted", ph)
-		}
+	// Must use static filelog (not receiver_creator).
+	if strings.Contains(body, "receiver_creator") {
+		t.Error("rendered config should not contain receiver_creator")
 	}
 
-	// Attributes must use quoted YAML strings with backtick expressions inside.
-	// Docker labels are accessed via labels["key"] map syntax, not label().
-	// The YAML source contains escaped double quotes (\") which the YAML parser
-	// resolves to plain " before the receiver_creator evaluates the expression.
+	// Filelog receiver with glob patterns.
 	for _, want := range []string{
-		`container.name:       "` + "`name`" + `"`,
-		`container.id:         "` + "`container_id`" + `"`,
-		`service.name:         "` + "`labels[\\\"com.docker.swarm.service.name\\\"]`" + `"`,
-		`service.namespace:    "` + "`labels[\\\"com.docker.stack.namespace\\\"]`" + `"`,
-		`container.image.name: "` + "`image`" + `"`,
+		`/var/lib/docker/containers/*/*-json.log`,
+		`exclude:`,
+		`otel-collector`,
+		`openobserve`,
+		`json_parser`,
+		`error_mode: ignore`,
+		`recombine`,
 	} {
 		if !strings.Contains(body, want) {
-			t.Errorf("rendered config missing expected attribute line: %q", want)
+			t.Errorf("rendered config missing expected content: %q", want)
 		}
 	}
 
-	// Must NOT contain the old unquoted backtick format (invalid YAML).
-	if strings.Contains(body, "container.name:       `") {
-		t.Error("rendered config contains unquoted backtick — invalid YAML")
+	// Must NOT contain the old observer-based approach.
+	if strings.Contains(body, "docker_observer") {
+		t.Error("rendered config should not contain docker_observer")
 	}
 }
 
