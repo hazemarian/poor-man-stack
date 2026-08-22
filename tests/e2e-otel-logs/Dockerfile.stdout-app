@@ -1,0 +1,15 @@
+# Simulates rsyslog — just writes structured lines to stdout
+FROM alpine:3.21
+COPY --chmod=755 <<'EOF' /entrypoint.sh
+#!/bin/sh
+i=0
+echo "rsyslog-app started, writing to stdout every 2 seconds..."
+while [ $i -lt 30 ]; do
+  i=$((i+1))
+  echo "{\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"level\":\"info\",\"message\":\"rsyslog message #$i from stdout-app\",\"service\":\"stdout-test-app\"}"
+  sleep 2
+done
+echo "Done."
+sleep 10
+EOF
+ENTRYPOINT ["/entrypoint.sh"]

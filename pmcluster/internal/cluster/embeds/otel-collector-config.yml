@@ -1,4 +1,13 @@
 ## pmcluster-config-version: __PMCONFIG_VERSION__
+#
+# OTel Collector configuration for pmcluster.
+#
+# Two log paths:
+#   1. filelog receiver — scrapes Docker JSON log files from containers
+#      that don't use OTLP/SDK (apps that just write to stdout/stderr).
+#   2. OTLP receiver (gRPC + HTTP) — accepts structured logs from apps
+#      with OTel SDKs. Set `skip_filelog: true` in the pmcluster manifest
+#      for services that send logs via OTLP.
 extensions:
   health_check:
 
@@ -24,10 +33,12 @@ receivers:
     exclude:
       - /var/lib/docker/containers/*otel-collector*/*-json.log
       - /var/lib/docker/containers/*openobserve*/*-json.log
+      __FILELOG_EXCLUDE_PATTERNS__
     include_file_name: false
     include_file_path: true
     start_at: end
     operators:
+      # Parse Docker JSON log format: {"log":"...","stream":"stdout|stderr","time":"..."}
       - type: json_parser
         error_mode: ignore
         timestamp:
@@ -36,20 +47,11 @@ receivers:
         severity:
           parse_from: attributes.stream
           mapping: { info: stdout, error: stderr }
+      # Move the parsed log message from attributes.log to body
       - type: move
         from: attributes.log
         to: body
         if: attributes.log != nil
-      - type: remove
-        field: attributes.time
-        if: attributes.time != nil
-      - type: remove
-        field: attributes.stream
-        if: attributes.stream != nil
-      - type: recombine
-        combine_field: body
-        is_first_entry: body matches "^\\d{4}-\\d{2}-\\d{2}|^\\[?\\d{4}-\\d{2}-\\d{2}"
-        source_identifier: attributes["log.file.path"]
 
 processors:
   resource:
@@ -64,42 +66,6 @@ processors:
   resourcedetection:
     detectors: [system, docker]
     override: false
-
-  filter/noise:
-    error_mode: ignore
-    logs:
-      log_record:
-        - 'not IsMatch(body, "ELB-HealthChecker/2.0")'
-        - 'not IsMatch(body, "kube-probe")'
-        - 'not (IsMatch(body, "GET /health HTTP") and attributes["stream"] == "stdout")'
-
-  transform:
-    error_mode: ignore
-    log_statements:
-      - context: resource
-        statements:
-          - set(attributes["service.name"], attributes["container.name"]) where attributes["service.name"] == "" or attributes["service.name"] == nil
-          - set(attributes["service.namespace"], "standalone") where attributes["service.namespace"] == "" or attributes["service.namespace"] == nil
-      - context: log
-        statements:
-          # Severity from Docker stream
-          - set(attributes["severity_text"], "INFO")  where attributes["stream"] == "stdout"
-          - set(attributes["severity_number"], 9)     where attributes["stream"] == "stdout"
-          - set(attributes["severity_text"], "ERROR") where attributes["stream"] == "stderr"
-          - set(attributes["severity_number"], 17)    where attributes["stream"] == "stderr"
-          # Severity defaults for OTLP-originated logs
-          - set(attributes["severity_number"], 9)    where severity_number == 0
-          - set(attributes["severity_text"], "INFO") where severity_number == 0
-          # Severity escalation from log body keywords
-          - set(attributes["severity_text"], "WARN") where severity_number <= 9  and IsMatch(body, "(?i)(\\bwarn\\b|\\bwarning\\b|\\[warn\\])")
-          - set(attributes["severity_number"], 13)   where severity_number <= 9  and IsMatch(body, "(?i)(\\bwarn\\b|\\bwarning\\b|\\[warn\\])")
-          - set(attributes["severity_text"], "ERROR") where severity_number <= 13 and IsMatch(body, "(?i)(\\berror\\b|\\berr\\b|\\bcritical\\b|\\[error\\])")
-          - set(attributes["severity_number"], 17)    where severity_number <= 13 and IsMatch(body, "(?i)(\\berror\\b|\\berr\\b|\\bcritical\\b|\\[error\\])")
-          # JSON log parsing and body promotion
-          - merge_maps(attributes, ParseJSON(body), "upsert") where IsMatch(body, "^\\{")
-          - set(attributes["severity_text"], attributes["level"]) where attributes["level"] != nil
-          - set(body, attributes["msg"])     where attributes["msg"] != nil
-          - set(body, attributes["message"]) where attributes["message"] != nil
 
   batch:
     send_batch_size: 1000
@@ -122,7 +88,7 @@ service:
   pipelines:
     logs:
       receivers:  [filelog, otlp]
-      processors: [filter/noise, transform, batch]
+      processors: [resource, batch]
       exporters:  [otlp/openobserve]
     metrics:
       receivers:  [docker_stats, otlp]

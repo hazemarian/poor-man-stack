@@ -149,10 +149,9 @@ func TestRenderOTelCollectorConfig_MissingPassword(t *testing.T) {
 	}
 }
 
-// TestRenderOTelCollectorConfig_NoiseFilterInPipeline verifies the rendered
-// config uses a filter/noise processor (with valid OTTL) instead of the
-// invalid drop() function in transform log_statements.
-func TestRenderOTelCollectorConfig_NoiseFilterInPipeline(t *testing.T) {
+// TestRenderOTelCollectorConfig_LogsPipeline verifies the rendered config
+// has a minimal logs pipeline: filelog → resource → batch → OTLP exporter.
+func TestRenderOTelCollectorConfig_LogsPipeline(t *testing.T) {
 	in := RenderInput{
 		OpenObserveAdminEmail:    "admin@x.com",
 		OpenObserveAdminPassword: "pw",
@@ -163,30 +162,16 @@ func TestRenderOTelCollectorConfig_NoiseFilterInPipeline(t *testing.T) {
 	}
 	body := string(data)
 
-	// The transform processor must NOT contain drop() — that function only
-	// exists in the filter processor.
-	if strings.Contains(body, "drop()") {
-		t.Error("transform processor must not contain drop(); noise filtering belongs in filter/noise")
-	}
-
-	// The filter/noise processor must exist with valid OTTL filter expressions.
-	if !strings.Contains(body, "filter/noise:") {
-		t.Error("missing filter/noise processor")
-	}
-	for _, want := range []string{
-		`not IsMatch(body, "ELB-HealthChecker/2.0")`,
-		`not IsMatch(body, "kube-probe")`,
-		`not (IsMatch(body, "GET /health HTTP")`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("filter/noise missing expression containing %q", want)
+	// Must NOT contain obsolete processors.
+	for _, bad := range []string{"drop()", "filter/noise:", "transform:", "recombine"} {
+		if strings.Contains(body, bad) {
+			t.Errorf("rendered config should not contain obsolete processor: %q", bad)
 		}
 	}
 
-	// The logs pipeline must place filter/noise before transform (resource
-	// processor is only for metrics, not logs).
-	if !strings.Contains(body, "[filter/noise, transform, batch]") {
-		t.Error("logs pipeline must include filter/noise before transform")
+	// Logs pipeline uses resource processor for label-based enrichment.
+	if !strings.Contains(body, "[resource, batch]") {
+		t.Error("logs pipeline must include resource processor before batch")
 	}
 	// Metrics pipeline still uses resource processor.
 	if !strings.Contains(body, "[resourcedetection, resource, batch]") {
@@ -220,11 +205,15 @@ func TestRenderOTelCollectorConfig_FilelogReceiver(t *testing.T) {
 		`openobserve`,
 		`json_parser`,
 		`error_mode: ignore`,
-		`recombine`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("rendered config missing expected content: %q", want)
 		}
+	}
+
+	// __FILELOG_EXCLUDE_PATTERNS__ should have been replaced (empty string for now).
+	if strings.Contains(body, "__FILELOG_EXCLUDE_PATTERNS__") {
+		t.Error("rendered config should not contain unreplaced placeholder __FILELOG_EXCLUDE_PATTERNS__")
 	}
 
 	// Must NOT contain the old observer-based approach.

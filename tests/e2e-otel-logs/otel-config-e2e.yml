@@ -1,0 +1,39 @@
+# Minimal OTel config for filelog e2e test
+receivers:
+  filelog:
+    include:
+      - /var/lib/docker/containers/*/*-json.log
+    exclude:
+      - /var/lib/docker/containers/*otel-collector*/*-json.log
+    include_file_name: false
+    include_file_path: true
+    start_at: beginning  # read existing content for testing
+    operators:
+      - type: json_parser
+        error_mode: ignore
+        timestamp:
+          parse_from: attributes.time
+          layout: '%Y-%m-%dT%H:%M:%S.%LZ'
+      - type: move
+        from: attributes.log
+        to: body
+        if: attributes.log != nil
+
+processors:
+  batch:
+    send_batch_size: 10
+    timeout: 5s
+
+exporters:
+  debug:
+    verbosity: detailed
+
+service:
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    logs:
+      receivers:  [filelog]
+      processors: [batch]
+      exporters:  [debug]

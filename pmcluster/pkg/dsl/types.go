@@ -46,6 +46,10 @@ type Service struct {
 	// RunOnce → restart_policy: condition: none. For migrations.
 	RunOnce bool `json:"run_once,omitempty"`
 
+	// SkipFilelog excludes this service from the filelog receiver.
+	// Set true when the service sends logs directly via OTLP (gRPC/HTTP).
+	SkipFilelog bool `json:"skip_filelog,omitempty"`
+
 	Placement string `json:"placement,omitempty"` // "manager" | "worker" | ""
 
 	Command    []string `json:"command,omitempty"`
