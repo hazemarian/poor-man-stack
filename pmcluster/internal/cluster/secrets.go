@@ -172,14 +172,49 @@ func EnsureConfig(ctx context.Context, d docker.Client, baseName string, data []
 	return versionedName, nil
 }
 
-// RandomPassword returns a 24-byte (~32-char base64url) random password.
+// RandomPassword returns a cryptographically random password that meets
+// OpenObserve complexity requirements: 8-128 characters with at least one
+// lowercase letter, one uppercase letter, one digit, and one special character.
 func RandomPassword() (string, error) {
-	const entropy = 24
+	const (
+		entropy       = 24
+		special       = "!@#$%^&*"
+		lowerLetters  = "abcdefghijklmnopqrstuvwxyz"
+		upperLetters  = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+		digits        = "0123456789"
+	)
+
 	buf := make([]byte, entropy)
 	if _, err := rand.Read(buf); err != nil {
 		return "", fmt.Errorf("read random bytes: %w", err)
 	}
-	return base64.RawURLEncoding.EncodeToString(buf), nil
+
+	// Base64-encode the random bytes, then append one guaranteed
+	// character of each required type.  The result is ~38 chars and
+	// always satisfies the OpenObserve password policy.
+	base := base64.RawURLEncoding.EncodeToString(buf)
+
+	// Pick one guaranteed char from each required set using the
+	// first few entropy bytes (we already consumed buf, so use the
+	// raw bytes directly before encoding for the indices).
+	guaranteed := []byte{
+		lowerLetters[int(buf[0])%len(lowerLetters)],
+		upperLetters[int(buf[1])%len(upperLetters)],
+		digits[int(buf[2])%len(digits)],
+		special[int(buf[3])%len(special)],
+	}
+
+	// Shuffle the guaranteed chars into random positions in the base
+	// string to avoid predictable placement.
+	b := []byte(base)
+	for i, gc := range guaranteed {
+		pos := int(buf[4+i]) % len(b)
+		b = append(b, 0)
+		copy(b[pos+1:], b[pos:])
+		b[pos] = gc
+	}
+
+	return string(b), nil
 }
 
 // HtpasswdLine produces "user:bcrypt-hash\n" for Traefik's basicAuth

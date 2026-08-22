@@ -2,9 +2,9 @@ package cluster
 
 import (
 	"context"
-	"encoding/base64"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -107,15 +107,31 @@ func TestRandomPassword_LengthAndEntropy(t *testing.T) {
 	}
 }
 
-func TestRandomPassword_IsBase64URLEncoded(t *testing.T) {
-	for i := 0; i < 5; i++ {
+func TestRandomPassword_MeetsOpenObservePolicy(t *testing.T) {
+	hasLower := regexp.MustCompile(`[a-z]`)
+	hasUpper := regexp.MustCompile(`[A-Z]`)
+	hasDigit := regexp.MustCompile(`[0-9]`)
+	hasSpecial := regexp.MustCompile(`[!@#$%^&*]`)
+
+	for i := 0; i < 10; i++ {
 		p, err := RandomPassword()
 		if err != nil {
 			t.Fatalf("RandomPassword: %v", err)
 		}
-		// Must decode as base64 raw URL (no padding, URL-safe alphabet).
-		if _, err := base64.RawURLEncoding.DecodeString(p); err != nil {
-			t.Errorf("password %q is not valid base64url: %v", p, err)
+		if len(p) < 8 || len(p) > 128 {
+			t.Errorf("password length %d outside [8,128]", len(p))
+		}
+		if !hasLower.MatchString(p) {
+			t.Errorf("password %q missing lowercase letter", p)
+		}
+		if !hasUpper.MatchString(p) {
+			t.Errorf("password %q missing uppercase letter", p)
+		}
+		if !hasDigit.MatchString(p) {
+			t.Errorf("password %q missing digit", p)
+		}
+		if !hasSpecial.MatchString(p) {
+			t.Errorf("password %q missing special character", p)
 		}
 	}
 }
