@@ -52,6 +52,15 @@ receivers:
         source_identifier: attributes["log.file.path"]
 
 processors:
+  resource:
+    attributes:
+      - key: service.name
+        action: upsert
+        from_attribute: "container.labels.com.docker.swarm.service.name"
+      - key: stack.name
+        action: upsert
+        from_attribute: "container.labels.com.docker.stack.namespace"
+
   resourcedetection:
     detectors: [system, docker]
     override: false

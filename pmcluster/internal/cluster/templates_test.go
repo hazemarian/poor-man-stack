@@ -183,9 +183,14 @@ func TestRenderOTelCollectorConfig_NoiseFilterInPipeline(t *testing.T) {
 		}
 	}
 
-	// The logs pipeline must place filter/noise before transform.
+	// The logs pipeline must place filter/noise before transform (resource
+	// processor is only for metrics, not logs).
 	if !strings.Contains(body, "[filter/noise, transform, batch]") {
 		t.Error("logs pipeline must include filter/noise before transform")
+	}
+	// Metrics pipeline still uses resource processor.
+	if !strings.Contains(body, "[resourcedetection, resource, batch]") {
+		t.Error("metrics pipeline must include resource processor")
 	}
 }
 
