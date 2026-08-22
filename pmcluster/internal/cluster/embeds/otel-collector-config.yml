@@ -43,6 +43,7 @@ receivers:
             container.image.name: "__BT__image__BT__"
           operators:
             - type: json_parser
+              error_mode: ignore
               timestamp:
                 parse_from: attributes.time
                 layout: '%Y-%m-%dT%H:%M:%S.%LZ'
@@ -52,10 +53,13 @@ receivers:
             - type: move
               from: attributes.log
               to: body
+              if: attributes.log != nil
             - type: remove
               field: attributes.time
+              if: attributes.time != nil
             - type: remove
               field: attributes.stream
+              if: attributes.stream != nil
             - type: recombine
               combine_field: body
               is_first_entry: body matches "^\\d{4}-\\d{2}-\\d{2}|^\\[?\\d{4}-\\d{2}-\\d{2}"
