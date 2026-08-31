@@ -176,11 +176,13 @@ func (s *Service) Deploy(ctx context.Context, p Payload) (res *DeployResult, ret
 		return nil, fmt.Errorf("docker stack deploy: %w", err)
 	}
 
-	// Prune stopped containers older than 10 minutes.  Docker Swarm keeps
-	// old task containers after rolling updates; they accumulate disk space
-	// and stale container log files that the OTel filelog receiver still watches.
+	// Prune stopped containers belonging to THIS stack that exited more
+	// than 10 minutes ago.  Docker Swarm keeps old task containers after
+	// rolling updates; they accumulate disk space and stale container log
+	// files that the OTel filelog receiver still watches.  Scoped to the
+	// deployed stack only — never touches containers from other stacks.
 	// Best-effort — don't fail the deploy if pruning errors out.
-	_ = s.Deployer.PruneContainers(ctx, "10m")
+	_ = s.Deployer.PruneStaleContainers(ctx, app.Name, "10m")
 
 	return &DeployResult{
 		StackName:    app.Name,

@@ -20,10 +20,10 @@ type StackDeployer interface {
 	// make tasks re-mount a freshly-rotated secret. fullName is "<stack>_<service>".
 	ForceUpdateService(ctx context.Context, fullName string) error
 
-	// PruneContainers removes stopped containers older than the given
-	// duration (e.g. 10m). Call after DeployStack to prevent stale task
-	// containers from accumulating disk space.
-	PruneContainers(ctx context.Context, olderThan string) error
+	// PruneStaleContainers removes stopped containers belonging to the
+	// given stack that exited more than olderThan ago (e.g. 10m). Scoped
+	// to a single stack — does NOT touch containers from other stacks.
+	PruneStaleContainers(ctx context.Context, stackName string, olderThan string) error
 }
 
 type dockerCLIDeployer struct {
@@ -152,17 +152,34 @@ func (d *dockerCLIDeployer) ForceUpdateService(ctx context.Context, fullName str
 	return nil
 }
 
-func (d *dockerCLIDeployer) PruneContainers(ctx context.Context, olderThan string) error {
-	cmd := exec.CommandContext(ctx, "docker", "container", "prune",
-		"--force",
+func (d *dockerCLIDeployer) PruneStaleContainers(ctx context.Context, stackName string, olderThan string) error {
+	// List all exited containers whose name starts with "<stack>_" and
+	// that exited more than olderThan ago.  This scopes cleanup to the
+	// stack being deployed — we never touch containers from other stacks.
+	//
+	// Docker Swarm container naming: <stack>_<service>.<slot>.<task-id>
+	listCmd := exec.CommandContext(ctx, "docker", "ps", "-a",
+		"--filter", "status=exited",
+		"--filter", "name=^/"+stackName+"_",
 		"--filter", "until="+olderThan,
+		"--format", "{{.ID}}",
 	)
-	out, err := d.runWithOutput(cmd)
+	listOut, err := d.runWithOutput(listCmd)
 	if err != nil {
-		if out != "" {
-			return fmt.Errorf("docker container prune: %s", out)
+		return fmt.Errorf("docker ps -a (stale %s): %s", stackName, listOut)
+	}
+
+	for _, id := range strings.Split(strings.TrimSpace(listOut), "\n") {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
 		}
-		return fmt.Errorf("docker container prune: %w", err)
+		rmCmd := exec.CommandContext(ctx, "docker", "rm", id)
+		if _, err := d.runWithOutput(rmCmd); err != nil {
+			// Best-effort per container: a race with another pruner or
+			// manual cleanup shouldn't fail the whole batch.
+			continue
+		}
 	}
 	return nil
 }

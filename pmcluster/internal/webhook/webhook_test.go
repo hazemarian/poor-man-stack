@@ -58,7 +58,7 @@ func (r *recordingDeployer) ForceUpdateService(_ context.Context, fullName strin
 	return nil
 }
 
-func (r *recordingDeployer) PruneContainers(_ context.Context, _ string) error {
+func (r *recordingDeployer) PruneStaleContainers(_ context.Context, _ string, _ string) error {
 	return nil
 }
 
