@@ -11,6 +11,9 @@ import (
 // can identify them later (e.g. for `cluster down --purge`).
 const pmclusterLabel = "io.pmcluster.managed"
 
+// PmclusterLabel is exported for cross-package access (serve health checks).
+const PmclusterLabel = pmclusterLabel
+
 // EnsureNetwork creates an attachable overlay network if it doesn't already
 // exist. Returns true if the network was newly created (handy for logs).
 //

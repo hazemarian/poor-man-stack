@@ -50,6 +50,9 @@ type Client interface {
 	// labelKey="" means no filter.
 	ConfigList(ctx context.Context, labelKey, labelValue string) ([]string, error)
 
+	// ConfigInspect returns labels and metadata for a config by name.
+	ConfigInspect(ctx context.Context, name string) (ConfigInspectResult, error)
+
 	Close() error
 }
 
@@ -57,6 +60,11 @@ type Ping struct {
 	APIVersion   string
 	OSType       string
 	Experimental bool
+}
+
+// ConfigInspectResult carries the labels of a Docker config.
+type ConfigInspectResult struct {
+	Labels map[string]string
 }
 
 // Info is the subset of `docker info` pmcluster cares about.
@@ -375,6 +383,14 @@ func (r *realClient) ConfigList(ctx context.Context, labelKey, labelValue string
 		names = append(names, c.Spec.Name)
 	}
 	return names, nil
+}
+
+func (r *realClient) ConfigInspect(ctx context.Context, name string) (ConfigInspectResult, error) {
+	cfg, _, err := r.c.ConfigInspectWithRaw(ctx, name)
+	if err != nil {
+		return ConfigInspectResult{}, fmt.Errorf("config inspect: %w", err)
+	}
+	return ConfigInspectResult{Labels: cfg.Spec.Labels}, nil
 }
 
 // isNotFoundString is a fallback for older daemons whose error doesn't

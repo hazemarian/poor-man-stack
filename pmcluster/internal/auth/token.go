@@ -2,10 +2,11 @@
 // hashing, and constant-time comparison.
 //
 // Token format (v2): pmc_<token_id>_<secret>
-//   token_id — 8 hex chars (4 random bytes), the unhashed public index
-//              stored in users.token_id for fast indexed lookup.
-//   secret   — 32 random bytes, base64url-encoded (~43 chars).
-//   The secret is argon2id-hashed and stored in users.token_hash.
+//
+//	token_id — 8 hex chars (4 random bytes), the unhashed public index
+//	           stored in users.token_id for fast indexed lookup.
+//	secret   — 32 random bytes, base64url-encoded (~43 chars).
+//	The secret is argon2id-hashed and stored in users.token_hash.
 //
 // Legacy tokens (pre-v2) are plain base64url without a prefix or id;
 // they are split on "_" — if there's only one part it's treated as a
@@ -27,8 +28,8 @@ import (
 )
 
 const (
-	rawTokenBytes = 32  // 256 bits → ~43 base64url chars
-	rawIDBytes    = 4   // 4 bytes → 8 hex chars
+	rawTokenBytes = 32 // 256 bits → ~43 base64url chars
+	rawIDBytes    = 4  // 4 bytes → 8 hex chars
 )
 
 // argon2id parameters per OWASP 2024 guidance for interactive auth.

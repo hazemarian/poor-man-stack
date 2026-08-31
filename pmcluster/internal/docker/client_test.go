@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 )
 
@@ -108,6 +109,13 @@ func (f *fakeClient) ConfigList(_ context.Context, _, _ string) ([]string, error
 		names = append(names, n)
 	}
 	return names, nil
+}
+
+func (f *fakeClient) ConfigInspect(_ context.Context, name string) (ConfigInspectResult, error) {
+	if c, ok := f.configs[name]; ok {
+		return ConfigInspectResult{Labels: c.Labels}, nil
+	}
+	return ConfigInspectResult{}, fmt.Errorf("config %q not found", name)
 }
 
 func (f *fakeClient) Close() error {

@@ -21,6 +21,7 @@ type UpInput struct {
 	TraefikAdminUser      string // defaults to "admin"
 	OpenObserveAdminEmail string
 	ConfigDir             string // ~/.pmcluster/config/ — user-editable templates
+	Version               string // build version (e.g. "v0.2.12") — tagged onto Docker configs
 }
 
 // UpResult includes plaintext passwords for any credentials newly minted
@@ -150,7 +151,7 @@ func Up(ctx context.Context, deps UpDeps, in UpInput) (*UpResult, error) {
 	if err != nil {
 		return res, err
 	}
-	otelConfigName, err := EnsureConfig(ctx, deps.Docker, "pmcluster_otel_config", otelYAML)
+	otelConfigName, err := EnsureConfig(ctx, deps.Docker, "pmcluster_otel_config", otelYAML, in.Version)
 	if err != nil {
 		return res, err
 	}
@@ -161,7 +162,7 @@ func Up(ctx context.Context, deps UpDeps, in UpInput) (*UpResult, error) {
 	if err != nil {
 		return res, err
 	}
-	traefikConfigName, err := EnsureConfig(ctx, deps.Docker, "pmcluster_traefik_dynamic", traefikYAML)
+	traefikConfigName, err := EnsureConfig(ctx, deps.Docker, "pmcluster_traefik_dynamic", traefikYAML, in.Version)
 	if err != nil {
 		return res, err
 	}

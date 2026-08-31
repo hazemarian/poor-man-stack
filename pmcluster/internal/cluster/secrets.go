@@ -118,7 +118,7 @@ func EnsureVersionedSecret(ctx context.Context, d docker.Client, baseName string
 //
 // baseName is the logical name ("pmcluster_otel_config"). The versioned name
 // is baseName + "_v" + zero-padded sequence.
-func EnsureConfig(ctx context.Context, d docker.Client, baseName string, data []byte) (versionedName string, err error) {
+func EnsureConfig(ctx context.Context, d docker.Client, baseName string, data []byte, version string) (versionedName string, err error) {
 	// List existing versioned configs with the pmcluster label and baseName
 	// prefix so we can find the next version number.
 	existing, err := d.ConfigList(ctx, pmclusterLabel, "true")
@@ -145,8 +145,9 @@ func EnsureConfig(ctx context.Context, d docker.Client, baseName string, data []
 		Name: versionedName,
 		Data: data,
 		Labels: map[string]string{
-			pmclusterLabel:   "true",
-			"pmcluster.base": baseName,
+			pmclusterLabel:      "true",
+			"pmcluster.base":    baseName,
+			"pmcluster.version": version,
 		},
 	})
 	if err != nil {
@@ -177,11 +178,11 @@ func EnsureConfig(ctx context.Context, d docker.Client, baseName string, data []
 // lowercase letter, one uppercase letter, one digit, and one special character.
 func RandomPassword() (string, error) {
 	const (
-		entropy       = 24
-		special       = "!@#$%^&*"
-		lowerLetters  = "abcdefghijklmnopqrstuvwxyz"
-		upperLetters  = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-		digits        = "0123456789"
+		entropy      = 24
+		special      = "!@#$%^&*"
+		lowerLetters = "abcdefghijklmnopqrstuvwxyz"
+		upperLetters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+		digits       = "0123456789"
 	)
 
 	buf := make([]byte, entropy)

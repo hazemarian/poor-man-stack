@@ -62,6 +62,9 @@ func (f *inMemoryDockerClient) ServiceList(_ context.Context) ([]docker.Service,
 func (f *inMemoryDockerClient) ConfigList(_ context.Context, _, _ string) ([]string, error) {
 	return nil, nil
 }
+func (f *inMemoryDockerClient) ConfigInspect(_ context.Context, _ string) (docker.ConfigInspectResult, error) {
+	return docker.ConfigInspectResult{}, nil
+}
 func (f *inMemoryDockerClient) NodeList(_ context.Context) ([]docker.Node, error) {
 	return f.nodeListResult, f.nodeListErr
 }

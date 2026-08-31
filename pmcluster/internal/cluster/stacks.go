@@ -201,7 +201,7 @@ func (d *dockerCLIDeployer) PruneStaleContainers(ctx context.Context, stackName 
 		}
 
 		rmCmd := exec.CommandContext(ctx, "docker", "rm", id)
-		d.runWithOutput(rmCmd) // best-effort
+		_, _ = d.runWithOutput(rmCmd) // best-effort; prunes exited containers
 	}
 	return nil
 }

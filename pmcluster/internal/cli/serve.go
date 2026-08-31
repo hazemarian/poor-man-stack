@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
 
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/backup"
@@ -93,6 +95,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		log.Warn().Err(dockerErr).Msg("docker client init failed; /api/cluster/info disabled")
 	} else {
 		defer func() { _ = dc.Close() }()
+		// Warn if running Docker configs are from an older pmcluster version.
+		// This catches the case where the binary was upgraded but 'cluster up'
+		// wasn't re-run — the OTel/Traefik configs are still on the old version.
+		checkConfigVersions(cmd.Context(), dc, log)
 	}
 
 	if err := replayRegistryLogins(cmd.Context(), st, cfg, log); err != nil {
@@ -125,4 +131,61 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	}
 	log.Info().Msg("pmcluster serve stopped cleanly")
 	return nil
+}
+
+// pmclusterConfigBases lists the Docker config base names managed by pmcluster
+// that should have a pmcluster.version label for version drift detection.
+var pmclusterConfigBases = []string{"pmcluster_otel_config", "pmcluster_traefik_dynamic"}
+
+// checkConfigVersions compares the running binary version against the
+// pmcluster.version label on managed Docker configs. If any config is on an
+// older version, it logs a WARN prompting 'pmcluster cluster up'.
+func checkConfigVersions(ctx context.Context, dc docker.Client, log zerolog.Logger) {
+	if buildinfo.Version == "" {
+		return // dev build, skip
+	}
+
+	// Fetch all pmcluster-managed configs in one call.
+	names, err := dc.ConfigList(ctx, cluster.PmclusterLabel, "true")
+	if err != nil {
+		log.Warn().Err(err).Msg("version check: cannot list Docker configs")
+		return
+	}
+
+	seen := make(map[string]bool, len(pmclusterConfigBases))
+	for _, name := range names {
+		for _, base := range pmclusterConfigBases {
+			if !strings.HasPrefix(name, base+"_v") {
+				continue
+			}
+			seen[base] = true
+			inspect, err := dc.ConfigInspect(ctx, name)
+			if err != nil {
+				log.Warn().Err(err).Str("config", name).Msg("version check: cannot inspect")
+				continue
+			}
+			labelVer := ""
+			if inspect.Labels != nil {
+				labelVer = inspect.Labels["pmcluster.version"]
+			}
+			if labelVer == "" {
+				// Config created before version labels existed.
+				log.Warn().
+					Str("config", name).
+					Str("running", buildinfo.Version).
+					Msg("version check: config has no pmcluster.version label — run 'pmcluster cluster up' to regenerate")
+			} else if labelVer != buildinfo.Version {
+				log.Warn().
+					Str("config", name).
+					Str("running", buildinfo.Version).
+					Str("config_version", labelVer).
+					Msg("version check: config version mismatch — run 'pmcluster cluster up' to regenerate")
+			}
+		}
+	}
+	for _, base := range pmclusterConfigBases {
+		if !seen[base] {
+			log.Warn().Str("base", base).Msg("version check: no managed config found")
+		}
+	}
 }

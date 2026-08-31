@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/docker"
 )
@@ -171,6 +172,13 @@ func (f *fakeDocker) ConfigList(_ context.Context, _, _ string) ([]string, error
 		names = append(names, n)
 	}
 	return names, nil
+}
+
+func (f *fakeDocker) ConfigInspect(_ context.Context, name string) (docker.ConfigInspectResult, error) {
+	if c, ok := f.configs[name]; ok {
+		return docker.ConfigInspectResult{Labels: c.Labels}, nil
+	}
+	return docker.ConfigInspectResult{}, fmt.Errorf("config %q not found", name)
 }
 
 func (f *fakeDocker) NodeList(_ context.Context) ([]docker.Node, error) { return nil, nil }

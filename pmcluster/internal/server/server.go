@@ -11,8 +11,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"golang.org/x/time/rate"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"golang.org/x/time/rate"
 
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/api"
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/auth"

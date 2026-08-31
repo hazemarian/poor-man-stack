@@ -170,7 +170,7 @@ func TestEnsureConfig_CreatesWhenMissing(t *testing.T) {
 	f := newFakeDocker()
 	data := []byte("otel: config")
 
-	name, err := EnsureConfig(context.Background(), f, "otel_config", data)
+	name, err := EnsureConfig(context.Background(), f, "otel_config", data, "v0.2.0")
 	if err != nil {
 		t.Fatalf("EnsureConfig: %v", err)
 	}
@@ -184,6 +184,10 @@ func TestEnsureConfig_CreatesWhenMissing(t *testing.T) {
 	if string(spec.Data) != "otel: config" {
 		t.Errorf("config data = %q, want 'otel: config'", spec.Data)
 	}
+	// Verify version label.
+	if spec.Labels["pmcluster.version"] != "v0.2.0" {
+		t.Errorf("version label = %q, want 'v0.2.0'", spec.Labels["pmcluster.version"])
+	}
 }
 
 func TestEnsureConfig_CreatesNewVersionWhenPreExisting(t *testing.T) {
@@ -194,7 +198,7 @@ func TestEnsureConfig_CreatesNewVersionWhenPreExisting(t *testing.T) {
 		Labels map[string]string
 	}{Name: "otel_config_v001", Data: []byte("original")}
 
-	name, err := EnsureConfig(context.Background(), f, "otel_config", []byte("new config data"))
+	name, err := EnsureConfig(context.Background(), f, "otel_config", []byte("new config data"), "v0.2.0")
 	if err != nil {
 		t.Fatalf("EnsureConfig: %v", err)
 	}
@@ -213,7 +217,7 @@ func TestEnsureConfig_CreatesNewVersionWhenPreExisting(t *testing.T) {
 func TestEnsureConfig_AttachesManagedLabel(t *testing.T) {
 	f := newFakeDocker()
 
-	name, err := EnsureConfig(context.Background(), f, "labeled-config", []byte("data"))
+	name, err := EnsureConfig(context.Background(), f, "labeled-config", []byte("data"), "v0.2.0")
 	if err != nil {
 		t.Fatalf("EnsureConfig: %v", err)
 	}
