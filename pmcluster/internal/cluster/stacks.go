@@ -7,6 +7,7 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // StackDeployer applies a compose file to the swarm under a given stack
@@ -153,20 +154,27 @@ func (d *dockerCLIDeployer) ForceUpdateService(ctx context.Context, fullName str
 }
 
 func (d *dockerCLIDeployer) PruneStaleContainers(ctx context.Context, stackName string, olderThan string) error {
-	// List all exited containers whose name starts with "<stack>_" and
-	// that exited more than olderThan ago.  This scopes cleanup to the
-	// stack being deployed — we never touch containers from other stacks.
+	// List exited containers whose name starts with "<stack>_" (Docker Swarm
+	// naming: <stack>_<service>.<slot>.<task-id>).  Filtering by name scopes
+	// cleanup to the stack being deployed — we never touch other stacks.
 	//
-	// Docker Swarm container naming: <stack>_<service>.<slot>.<task-id>
-	listCmd := exec.CommandContext(ctx, "docker", "ps", "-a",
+	// Use docker inspect to check the FinishedAt timestamp so we only
+	// remove containers that have been stopped longer than olderThan.
+
+	listCmd := exec.CommandContext(ctx, "docker", "container", "ls", "-a",
 		"--filter", "status=exited",
 		"--filter", "name=^/"+stackName+"_",
-		"--filter", "until="+olderThan,
 		"--format", "{{.ID}}",
 	)
 	listOut, err := d.runWithOutput(listCmd)
 	if err != nil {
-		return fmt.Errorf("docker ps -a (stale %s): %s", stackName, listOut)
+		return fmt.Errorf("docker container ls (stale %s): %s", stackName, listOut)
+	}
+
+	// Parse the olderThan duration string (e.g. "10m", "1h").
+	dur, err := parseDuration(olderThan)
+	if err != nil {
+		return fmt.Errorf("prune: invalid duration %q: %w", olderThan, err)
 	}
 
 	for _, id := range strings.Split(strings.TrimSpace(listOut), "\n") {
@@ -174,12 +182,32 @@ func (d *dockerCLIDeployer) PruneStaleContainers(ctx context.Context, stackName 
 		if id == "" {
 			continue
 		}
-		rmCmd := exec.CommandContext(ctx, "docker", "rm", id)
-		if _, err := d.runWithOutput(rmCmd); err != nil {
-			// Best-effort per container: a race with another pruner or
-			// manual cleanup shouldn't fail the whole batch.
-			continue
+
+		// Check if this container has been stopped long enough.
+		inspectCmd := exec.CommandContext(ctx, "docker", "inspect",
+			"--format", "{{.State.FinishedAt}}", id)
+		finishedAt, err := d.runWithOutput(inspectCmd)
+		if err != nil {
+			continue // best-effort
 		}
+
+		t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(finishedAt))
+		if err != nil {
+			continue // best-effort
+		}
+
+		if time.Since(t) < dur {
+			continue // not stale enough yet
+		}
+
+		rmCmd := exec.CommandContext(ctx, "docker", "rm", id)
+		d.runWithOutput(rmCmd) // best-effort
 	}
 	return nil
+}
+
+// parseDuration converts a human-readable duration like "10m" or "1h" to
+// a time.Duration.  It accepts the same suffixes as time.ParseDuration.
+func parseDuration(s string) (time.Duration, error) {
+	return time.ParseDuration(s)
 }
