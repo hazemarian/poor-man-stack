@@ -214,6 +214,10 @@ func (r *recordingDeployer) ForceUpdateService(_ context.Context, fullName strin
 	return nil
 }
 
+func (r *recordingDeployer) PruneContainers(_ context.Context, olderThan string) error {
+	return nil
+}
+
 // Compile-time assertion.
 var _ StackDeployer = (*recordingDeployer)(nil)
 

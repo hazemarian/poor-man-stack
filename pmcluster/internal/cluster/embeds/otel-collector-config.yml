@@ -69,6 +69,16 @@ processors:
         action: upsert
         from_attribute: "container.labels.com.docker.stack.namespace"
 
+  # Copy service.name from resource into metric data points so they are
+  # queryable / groupable in OpenObserve (docker_stats receiver sets
+  # resource attributes but OO stores them separately from metric fields).
+  transform/metrics:
+    metric_statements:
+      - context: datapoint
+        statements:
+          - set(attributes["service_name"], resource.attributes["service.name"])
+          - set(attributes["stack_name"], resource.attributes["stack.name"])
+
   resourcedetection:
     detectors: [system, docker]
     override: false
@@ -98,7 +108,7 @@ service:
       exporters:  [otlp/openobserve]
     metrics:
       receivers:  [docker_stats, otlp]
-      processors: [resourcedetection, resource, batch]
+      processors: [resourcedetection, resource, transform/metrics, batch]
       exporters:  [otlp/openobserve]
     traces:
       receivers:  [otlp]

@@ -19,6 +19,11 @@ type StackDeployer interface {
 	// ForceUpdateService restarts all tasks of a service in place; used to
 	// make tasks re-mount a freshly-rotated secret. fullName is "<stack>_<service>".
 	ForceUpdateService(ctx context.Context, fullName string) error
+
+	// PruneContainers removes stopped containers older than the given
+	// duration (e.g. 10m). Call after DeployStack to prevent stale task
+	// containers from accumulating disk space.
+	PruneContainers(ctx context.Context, olderThan string) error
 }
 
 type dockerCLIDeployer struct {
@@ -143,6 +148,21 @@ func (d *dockerCLIDeployer) ForceUpdateService(ctx context.Context, fullName str
 			return fmt.Errorf("docker service update --force %s: %s", fullName, out)
 		}
 		return fmt.Errorf("docker service update --force %s: %w", fullName, err)
+	}
+	return nil
+}
+
+func (d *dockerCLIDeployer) PruneContainers(ctx context.Context, olderThan string) error {
+	cmd := exec.CommandContext(ctx, "docker", "container", "prune",
+		"--force",
+		"--filter", "until="+olderThan,
+	)
+	out, err := d.runWithOutput(cmd)
+	if err != nil {
+		if out != "" {
+			return fmt.Errorf("docker container prune: %s", out)
+		}
+		return fmt.Errorf("docker container prune: %w", err)
 	}
 	return nil
 }

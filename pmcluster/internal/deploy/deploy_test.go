@@ -37,6 +37,10 @@ func (r *recordingDeployer) ForceUpdateService(_ context.Context, _ string) erro
 	return nil
 }
 
+func (r *recordingDeployer) PruneContainers(_ context.Context, _ string) error {
+	return nil
+}
+
 // Ensure the interface is satisfied.
 var _ cluster.StackDeployer = (*recordingDeployer)(nil)
 

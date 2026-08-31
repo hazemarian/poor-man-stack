@@ -58,6 +58,10 @@ func (r *recordingDeployer) ForceUpdateService(_ context.Context, fullName strin
 	return nil
 }
 
+func (r *recordingDeployer) PruneContainers(_ context.Context, _ string) error {
+	return nil
+}
+
 // Compile-time assertion.
 var _ cluster.StackDeployer = (*recordingDeployer)(nil)
 

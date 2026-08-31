@@ -169,13 +169,13 @@ func TestRenderOTelCollectorConfig_LogsPipeline(t *testing.T) {
 		}
 	}
 
-	// Logs pipeline uses resourcedetection → resource for label-based enrichment.
-	if !strings.Contains(body, "[resourcedetection, resource, batch]") {
-		t.Error("logs pipeline must include resourcedetection + resource before batch")
+	// Logs pipeline uses resourcedetection → resource → filter/skip_filelog for label-based enrichment.
+	if !strings.Contains(body, "[resourcedetection, resource, filter/skip_filelog, batch]") {
+		t.Error("logs pipeline must include resourcedetection + resource + filter/skip_filelog before batch")
 	}
-	// Metrics pipeline still uses resource processor.
-	if !strings.Contains(body, "[resourcedetection, resource, batch]") {
-		t.Error("metrics pipeline must include resource processor")
+	// Metrics pipeline uses resourcedetection → resource → transform/metrics.
+	if !strings.Contains(body, "[resourcedetection, resource, transform/metrics, batch]") {
+		t.Error("metrics pipeline must include resourcedetection + resource + transform/metrics before batch")
 	}
 }
 
