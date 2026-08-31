@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/hazemarian/poor-man-stack/pmcluster/internal/buildinfo"
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/cluster"
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/config"
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/credentials"
@@ -82,6 +83,7 @@ func runClusterUp(cmd *cobra.Command, _ []string) error {
 	defer log.Info().Msg("cluster up: finished")
 
 	in := cluster.UpInput{}
+	in.Version = buildinfo.Version
 	in.Domain, _ = cmd.Flags().GetString("domain")
 	in.ACMEEmail, _ = cmd.Flags().GetString("acme-email")
 	in.CertPath, _ = cmd.Flags().GetString("cert")

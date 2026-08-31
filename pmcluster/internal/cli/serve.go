@@ -141,7 +141,7 @@ var pmclusterConfigBases = []string{"pmcluster_otel_config", "pmcluster_traefik_
 // pmcluster.version label on managed Docker configs. If any config is on an
 // older version, it logs a WARN prompting 'pmcluster cluster up'.
 func checkConfigVersions(ctx context.Context, dc docker.Client, log zerolog.Logger) {
-	if buildinfo.Version == "" {
+	if buildinfo.Version == "" || buildinfo.Version == "dev" {
 		return // dev build, skip
 	}
 
