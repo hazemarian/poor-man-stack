@@ -237,6 +237,43 @@ func TestRenderOTelCollectorConfig_FilelogReceiver(t *testing.T) {
 	}
 }
 
+// TestRenderOTelCollectorConfig_DockerStatsLabels verifies the docker_stats
+// receiver promotes Swarm container labels to metric datapoint attributes via
+// the (real) container_labels_to_metric_labels option, and no longer relies on
+// the non-existent metric_labels_to_resource_attributes key.
+func TestRenderOTelCollectorConfig_DockerStatsLabels(t *testing.T) {
+	in := RenderInput{
+		OpenObserveAdminEmail:    "admin@x.com",
+		OpenObserveAdminPassword: "pw",
+	}
+	data, err := RenderOTelCollectorConfig(in)
+	if err != nil {
+		t.Fatalf("RenderOTelCollectorConfig: %v", err)
+	}
+	body := string(data)
+
+	for _, want := range []string{
+		"container_labels_to_metric_labels",
+		`com.docker.swarm.service.name: "service_name"`,
+		`com.docker.stack.namespace:    "stack_name"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rendered config missing expected docker_stats mapping: %q", want)
+		}
+	}
+	// The phantom key must not appear as an actual option (with colon); a
+	// comment may mention it, so only match the YAML key form.
+	if strings.Contains(body, "metric_labels_to_resource_attributes:") {
+		t.Error("rendered config should NOT contain the non-existent metric_labels_to_resource_attributes option")
+	}
+	// transform/metrics must guard against clobbering the label-derived values.
+	for _, want := range []string{`conditions:`, `resource.attributes["service.name"] != nil`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("transform/metrics missing guard condition: %q", want)
+		}
+	}
+}
+
 // TestRenderTraefikDynamic_SubstitutesDomain verifies that __DOMAIN__ is
 // replaced with the supplied Domain value.
 func TestRenderTraefikDynamic_SubstitutesDomain(t *testing.T) {

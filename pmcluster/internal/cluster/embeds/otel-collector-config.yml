@@ -21,11 +21,14 @@ receivers:
     endpoint: "unix:///var/run/docker.sock"
     collection_interval: 10s
     api_version: "1.44"
-    metric_labels_to_resource_attributes:
-      com.docker.swarm.service.name: "service.name"
-      com.docker.stack.namespace:    "stack.name"
-      com.docker.swarm.node.id:      "swarm.node.id"
-      com.docker.swarm.task.name:    "container.name"
+    # Promote Swarm container labels directly to metric datapoint attributes.
+    # (container_labels_to_metric_labels is the documented dockerstats key;
+    #  metric_labels_to_resource_attributes is NOT a real receiver option and
+    #  previously produced no attributes, leaving service_name/stack_name empty.)
+    container_labels_to_metric_labels:
+      com.docker.swarm.service.name: "service_name"
+      com.docker.stack.namespace:    "stack_name"
+      com.docker.swarm.node.id:      "swarm_node_id"
 
   filelog:
     include:
@@ -75,6 +78,11 @@ processors:
   transform/metrics:
     metric_statements:
       - context: datapoint
+        # Only copy resource service.name when it actually exists (OTLP/SDK
+        # metrics). Guard so this never clobbers the service_name/stack_name
+        # that docker_stats attaches directly from Swarm container labels.
+        conditions:
+          - 'resource.attributes["service.name"] != nil'
         statements:
           - set(attributes["service_name"], resource.attributes["service.name"])
           - set(attributes["stack_name"], resource.attributes["stack.name"])
