@@ -125,19 +125,36 @@ func (r *statusRecorder) WriteHeader(code int) {
 
 // httpStatusSpan runs inside the otelhttp server span and maps the final HTTP
 // status code onto the span status: >= 400 is Error, everything else Ok (same
-// convention as the app fleet).
+// convention as the app fleet). It also tags each request with its origin
+// (webhook vs api vs health) so traces are easy to tell apart in OpenObserve.
 func httpStatusSpan(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
 		span := trace.SpanFromContext(r.Context())
 		span.SetAttributes(attribute.Int("http.status_code", rec.status))
+		span.SetAttributes(attribute.String("request.kind", requestKind(r.URL.Path)))
 		if rec.status >= 400 {
 			span.SetStatus(codes.Error, fmt.Sprintf("HTTP %d", rec.status))
 		} else {
 			span.SetStatus(codes.Ok, "")
 		}
 	})
+}
+
+// requestKind buckets a request path into webhook / api / health / other so
+// traces can be filtered by where the call came from.
+func requestKind(path string) string {
+	switch {
+	case strings.HasPrefix(path, "/webhook/"):
+		return "webhook"
+	case strings.HasPrefix(path, "/api/"):
+		return "api"
+	case path == "/health":
+		return "health"
+	default:
+		return "other"
+	}
 }
 
 // trustedRealIP is like chi's RealIP but only trusts X-Forwarded-For /
