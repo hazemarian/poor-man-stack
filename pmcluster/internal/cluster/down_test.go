@@ -93,17 +93,19 @@ func TestDown_Purge_RemovesAllManagedResources(t *testing.T) {
 			Labels map[string]string
 		}{Name: name}
 	}
-	// Configs are now discovered via ConfigList (versioned). Seed two.
+	// Configs are now discovered via ConfigList (versioned). Seed two,
+	// each carrying the managed label so the purge's label filter finds them
+	// (mirrors how production pmcluster-managed configs are labelled).
 	f.configs["pmcluster_otel_config_v001"] = struct {
 		Name   string
 		Data   []byte
 		Labels map[string]string
-	}{Name: "pmcluster_otel_config_v001"}
+	}{Name: "pmcluster_otel_config_v001", Labels: map[string]string{pmclusterLabel: "true"}}
 	f.configs["pmcluster_traefik_dynamic_v001"] = struct {
 		Name   string
 		Data   []byte
 		Labels map[string]string
-	}{Name: "pmcluster_traefik_dynamic_v001"}
+	}{Name: "pmcluster_traefik_dynamic_v001", Labels: map[string]string{pmclusterLabel: "true"}}
 	for _, name := range pmclusterManagedNetworks {
 		f.networks[name] = struct {
 			Name       string

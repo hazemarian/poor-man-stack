@@ -119,9 +119,15 @@ func EnsureVersionedSecret(ctx context.Context, d docker.Client, baseName string
 // baseName is the logical name ("pmcluster_otel_config"). The versioned name
 // is baseName + "_v" + zero-padded sequence.
 func EnsureConfig(ctx context.Context, d docker.Client, baseName string, data []byte, version string) (versionedName string, err error) {
-	// List existing versioned configs with the pmcluster label and baseName
-	// prefix so we can find the next version number.
-	existing, err := d.ConfigList(ctx, pmclusterLabel, "true")
+	// List ALL configs, then own the ones matching our versioned name prefix
+	// by name rather than by label. We deliberately don't filter by the
+	// pmcluster label here: a matcher can end up without the label (e.g. a
+	// config created by a partially-finished run or a manual helper), and if
+	// we ignore it we'll try to recreate its version number and collide. By
+	// keying on the baseName_vNNN naming scheme we stay pmcluster-owned even
+	// when an orphan drops its label, and the orphan gets GC'd once a newer
+	// version takes over and it's no longer mounted.
+	existing, err := d.ConfigList(ctx, "", "")
 	if err != nil {
 		return "", fmt.Errorf("list configs: %w", err)
 	}

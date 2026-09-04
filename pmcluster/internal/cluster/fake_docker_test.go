@@ -166,9 +166,12 @@ func (f *fakeDocker) SecretList(_ context.Context, _, _ string) ([]string, error
 	return names, nil
 }
 
-func (f *fakeDocker) ConfigList(_ context.Context, _, _ string) ([]string, error) {
+func (f *fakeDocker) ConfigList(_ context.Context, labelKey, labelValue string) ([]string, error) {
 	names := make([]string, 0, len(f.configs))
-	for n := range f.configs {
+	for n, c := range f.configs {
+		if labelKey != "" && c.Labels[labelKey] != labelValue {
+			continue
+		}
 		names = append(names, n)
 	}
 	return names, nil
