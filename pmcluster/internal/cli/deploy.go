@@ -83,6 +83,8 @@ func openDeploySvc(cmd *cobra.Command) (*deploy.Service, *store.Store, func(), e
 }
 
 func runDeploy(cmd *cobra.Command, args []string) error {
+	defer initCLITelemetry()()
+
 	manifestPath := args[0]
 	manifestBytes, err := os.ReadFile(manifestPath)
 	if err != nil {
@@ -217,6 +219,8 @@ func formatLastBackup(ctx context.Context, st *store.Store, name string) string 
 }
 
 func runRollback(cmd *cobra.Command, args []string) error {
+	defer initCLITelemetry()()
+
 	name := args[0]
 	rev, err := strconv.ParseInt(args[1], 10, 64)
 	if err != nil {

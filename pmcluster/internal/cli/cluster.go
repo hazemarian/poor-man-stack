@@ -57,6 +57,8 @@ func init() {
 }
 
 func runClusterUp(cmd *cobra.Command, _ []string) error {
+	defer initCLITelemetry()()
+
 	ctx := cmd.Context()
 
 	cfg, err := config.Load(configPath)

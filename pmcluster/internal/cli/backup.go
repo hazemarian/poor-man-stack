@@ -45,6 +45,8 @@ func init() {
 }
 
 func runBackupCreate(cmd *cobra.Command, _ []string) error {
+	defer initCLITelemetry()()
+
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 
 	st, _, err := openStore()
