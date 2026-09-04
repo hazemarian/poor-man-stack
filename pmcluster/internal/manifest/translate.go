@@ -154,7 +154,11 @@ func translateHealthcheck(s *dsl.Service) *composeHealthcheck {
 		if path == "" {
 			path = "/"
 		}
-		test := fmt.Sprintf("wget -q --spider http://localhost:%d%s", port, path)
+		// Use 127.0.0.1 (not "localhost"): inside containers localhost can
+		// resolve to IPv6 ::1 while apps commonly bind IPv4 0.0.0.0 only, so a
+		// localhost probe gets "connection refused" and the task is flagged
+		// unhealthy and restart-looped by Swarm even though the app is fine.
+		test := fmt.Sprintf("wget -q --spider http://127.0.0.1:%d%s", port, path)
 		return &composeHealthcheck{
 			Test:     []string{"CMD-SHELL", test},
 			Interval: "10s",

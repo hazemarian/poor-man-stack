@@ -81,7 +81,7 @@ type Expose struct {
 type Healthcheck struct {
 	// Type shortcuts:
 	//   "pg_isready" → CMD-SHELL pg_isready -U $POSTGRES_USER -d $POSTGRES_DB
-	//   "http"       → wget -q --spider http://localhost:<port>/<Path>
+	//   "http"       → wget -q --spider http://127.0.0.1:<port>/<Path>
 	Type string `json:"type,omitempty"`
 	Path string `json:"path,omitempty"` // for Type="http"; defaults to "/"
 
