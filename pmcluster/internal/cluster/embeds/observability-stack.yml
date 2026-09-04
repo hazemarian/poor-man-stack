@@ -3,7 +3,7 @@ version: "3.9"
 
 services:
   openobserve:
-    image: public.ecr.aws/zinclabs/openobserve:v0.91.3
+    image: public.ecr.aws/zinclabs/openobserve:v0.92.2
     # No entrypoint override — the image is distroless (no /bin/sh).
     # ZO_ROOT_USER_PASSWORD is rendered directly by pmcluster at deploy
     # time from the managed credential. It flows through `docker stack deploy`
