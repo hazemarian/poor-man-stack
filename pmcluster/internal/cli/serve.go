@@ -66,7 +66,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	// daemon — operators can fix and restart.
 	telemetryShutdown, err := telemetry.Init(cmd.Context(), telemetry.Options{
 		Endpoint:       cfg.OTLPEndpoint,
-		ServiceName:    "pmcluster",
+		ServiceName:    serviceName(),
 		ServiceVersion: buildinfo.Version,
 	})
 	if err != nil {
@@ -188,4 +188,14 @@ func checkConfigVersions(ctx context.Context, dc docker.Client, log zerolog.Logg
 			log.Warn().Str("base", base).Msg("version check: no managed config found")
 		}
 	}
+}
+
+// serviceName returns the OTel resource service.name. It prefers the
+// OTEL_SERVICE_NAME env var so deployments can override it, falling back to
+// "pmcluster" for local runs.
+func serviceName() string {
+	if n := strings.TrimSpace(os.Getenv("OTEL_SERVICE_NAME")); n != "" {
+		return n
+	}
+	return "pmcluster"
 }

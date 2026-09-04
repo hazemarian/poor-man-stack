@@ -4,6 +4,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -12,6 +13,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/time/rate"
 
 	"github.com/hazemarian/poor-man-stack/pmcluster/internal/api"
@@ -55,6 +59,9 @@ func New(d Deps) http.Handler {
 	// networks, localhost) — prevents IP spoofing from untrusted callers.
 	r.Use(trustedRealIP)
 	r.Use(middleware.RequestID)
+	// Map the final HTTP status code onto the otelhttp server span's status
+	// (otelhttp leaves it unset otherwise). Runs inside the server span.
+	r.Use(httpStatusSpan)
 
 	// Per-IP rate limiting: separate buckets for API and webhook paths.
 	cfg := defaultRateConfig()
@@ -102,6 +109,35 @@ func New(d Deps) http.Handler {
 	// the route on the context, otelhttp picks it up via the
 	// http.route attribute it sets after the chi pattern matches).
 	return otelhttp.NewHandler(r, "pmcluster.http")
+}
+
+// statusRecorder captures the HTTP status code written by the handler so we
+// can map it onto the OTel server span's status.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+// httpStatusSpan runs inside the otelhttp server span and maps the final HTTP
+// status code onto the span status: >= 400 is Error, everything else Ok (same
+// convention as the app fleet).
+func httpStatusSpan(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+		span := trace.SpanFromContext(r.Context())
+		span.SetAttributes(attribute.Int("http.status_code", rec.status))
+		if rec.status >= 400 {
+			span.SetStatus(codes.Error, fmt.Sprintf("HTTP %d", rec.status))
+		} else {
+			span.SetStatus(codes.Ok, "")
+		}
+	})
 }
 
 // trustedRealIP is like chi's RealIP but only trusts X-Forwarded-For /
